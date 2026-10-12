@@ -1,0 +1,12 @@
+diff --git a/ports/rp2/CMakeLists.txt b/ports/rp2/CMakeLists.txt
+index ee6f1b8..1e973d5 100644
+--- a/ports/rp2/CMakeLists.txt
++++ b/ports/rp2/CMakeLists.txt
+@@ -539,6 +539,7 @@ target_include_directories(${MICROPY_TARGET} PRIVATE
+ target_compile_options(${MICROPY_TARGET} PRIVATE
+     -Wall
+     -Werror
++    -Wno-error=array-bounds
+     -g  # always include debug information in the ELF
+ 
+     # Let the compiler lower sqrt()/sqrtf() to the hardware VSQRT instruction

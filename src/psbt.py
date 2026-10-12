@@ -1,0 +1,592 @@
+"""PSBT ตาม BIP-174 — อ่าน, วิเคราะห์, เซ็น
+
+ออกแบบให้ "ตรวจก่อนเซ็น" เป็นหน้าที่หลัก ไม่ใช่แค่เซ็นให้ผ่าน ๆ
+"""
+
+import base64_min as b64
+import bip32
+import secp256k1 as ec
+import tx as txmod
+from tx import Transaction, read_varint, ser_varint, ser_varbytes
+
+MAGIC = b"psbt\xff"
+
+# --- คีย์ฝั่ง global ---
+GLOBAL_UNSIGNED_TX = 0x00
+GLOBAL_XPUB = 0x01
+GLOBAL_VERSION = 0xFB
+
+# --- คีย์ฝั่ง input ---
+IN_NON_WITNESS_UTXO = 0x00
+IN_WITNESS_UTXO = 0x01
+IN_PARTIAL_SIG = 0x02
+IN_SIGHASH_TYPE = 0x03
+IN_REDEEM_SCRIPT = 0x04
+IN_WITNESS_SCRIPT = 0x05
+IN_BIP32_DERIVATION = 0x06
+IN_FINAL_SCRIPTSIG = 0x07
+IN_FINAL_SCRIPTWITNESS = 0x08
+
+# --- คีย์ฝั่ง output ---
+OUT_REDEEM_SCRIPT = 0x00
+OUT_WITNESS_SCRIPT = 0x01
+OUT_BIP32_DERIVATION = 0x02
+
+
+# 🔴 กันโจมตีแบบทำเครื่องค้าง (พบ 11 ก.ย. 2026)
+#    PSBT ระบุเส้นทางกุญแจได้ยาวไม่จำกัด และใส่กี่รายการก็ได้ ถ้าเราไล่ตามหมด
+#    path 300 ชั้น = เครื่องค้าง 4.5 นาทีบนหน้า READING โดยกดยกเลิกไม่ได้
+#    วิธีกัน: (ก) ไม่ไล่ path ที่ลึกกว่าของจริงที่เป็นไปได้ (ข) ไม่ดูเกิน N รายการต่อ map
+#             (ค) มีงบรวมทั้ง PSBT — เกินแล้วปฏิเสธทั้งใบพร้อมบอกเหตุผล ดีกว่าค้างเงียบ
+#    เส้นทางจริง: m/84h/0h/0h/1/5 = 5 ชั้น · multisig m/48h/0h/0h/2h/0/5 = 6 ชั้น
+MAX_DERIV_DEPTH = 8        # ชั้น
+MAX_DERIV_PER_MAP = 4      # รายการที่อ้าง fingerprint เราต่อ input/output
+MAX_DERIV_STEPS = 600      # ชั้นรวมทั้ง PSBT (~ 100 input x 5 ชั้น + เงินทอน)
+
+# 🔴 เงินทอนต้องอยู่บนเส้นทางที่ "เครื่องนี้" ใช้จริงเท่านั้น (แก้ 11 ก.ย. 2026)
+#    เดิมนับเป็นเงินทอนถ้าพิสูจน์ได้ว่าเป็นกุญแจเราล้วน ๆ โดยไม่สนเส้นทาง
+#    คนร้ายจึงสร้าง PSBT ที่ระบุเงินทอนเป็น m/84h/0h/999h/0/0 ได้
+#    -> จอขึ้น "SEND 0" เหมือนไม่มีอะไรออกจากกระเป๋า แต่เงินไปอยู่บัญชีที่
+#       กระเป๋าฝั่งคอมไม่ได้เฝ้าดู เจ้าของต้องไปไล่หาเองถึงจะเจอ
+#    ยังเป็นกุญแจเราอยู่ (ไม่ถูกขโมย) แต่ "หายไปจากสายตา" ซึ่งอันตรายพอกัน
+#    วิธีกัน: เส้นทางไหนไม่ตรงแบบนี้ ไม่นับเป็นเงินทอน -> ไปโผล่เป็นปลายทางให้ผู้ใช้เห็นที่อยู่
+#    (fail-safe: แย่สุดคือผู้ใช้ต้องกดยืนยันที่อยู่เพิ่มหนึ่งหน้า ดีกว่าถูกซ่อน)
+HARDENED = 0x80000000
+CHANGE_ACCOUNT = (84 + HARDENED, 0 + HARDENED, 0 + HARDENED)   # ค่าเริ่มต้น = account 0
+
+# 🔑 เลือก account ได้ (เพิ่ม 14 ก.ย. 2026 — ผู้ใช้ เลือกแบบ "มีเมนูเลือก" ให้ยืดหยุ่นแบบกระเป๋าทั่วไป)
+#    ตัวอย่างการใช้: seed เดียวกับหลายเครื่อง แต่ละเครื่องใช้คนละ account = กระเป๋าคนละใบ
+#    เงินทอนต้องอยู่ใน account ที่ผู้ใช้เลือกไว้เท่านั้น — account อื่นแม้เป็นกุญแจเรา
+#    ก็ไม่นับเป็นเงินทอน (โผล่เป็นปลายทางให้เห็น) ตามหลัก fail-safe เดิม
+def _bip84_account(path):
+    """เลข account จากเส้นทางแบบ m/84h/0h/<n>h/<chain>/<index> · ไม่ใช่รูปแบบนี้ = None"""
+    if (len(path) == CHANGE_DEPTH and path[0] == 84 + HARDENED and path[1] == 0 + HARDENED
+            and path[2] >= HARDENED):
+        return path[2] - HARDENED
+    return None
+
+
+def change_account(account=0):
+    """(84h, 0h, <account>h) — ส่วนหัวของเส้นทางที่นับเป็นเงินทอนได้"""
+    if not isinstance(account, int) or account < 0 or account >= HARDENED:
+        raise ValueError("account ต้องอยู่ในช่วง 0..2^31-1")
+    return (84 + HARDENED, 0 + HARDENED, account + HARDENED)
+CHANGE_CHAINS = (0, 1)        # 0 = ช่องรับ · 1 = ช่องเงินทอน (กระเป๋าบางตัวทอนเข้า 0)
+CHANGE_DEPTH = 5              # m/84h/0h/0h/<chain>/<index>
+
+# 🔴 เพดานเลขที่อยู่ของเงินทอน (เพิ่ม 12 ก.ย. 2026 — ได้ไอเดียจาก Coldcard)
+#    เช็คแค่ "เส้นทางถูกแบบ" ยังไม่พอ เงินทอนที่ไป m/84h/0h/0h/1/999999
+#    ยังเป็นกุญแจเราก็จริง แต่กระเป๋าฝั่งคอมสแกนหาแค่ ~20 ที่อยู่แรก จะมองไม่เห็นเงินก้อนนั้น
+#    Coldcard แก้ด้วยการดูว่า input ที่กำลังจะเซ็นใช้เลขอะไร แล้วให้เงินทอนอยู่ใกล้ ๆ กัน
+#    เราทำแบบเดียวกัน: เลขเงินทอนต้องไม่เกิน (เลขสูงสุดของ input + CHANGE_GAP)
+CHANGE_GAP = 200
+CHANGE_INDEX_CAP = 100000     # เพดานเด็ดขาด เผื่อกรณีไม่รู้เลขของ input เลย
+
+
+# 🔴 เพดานค่าธรรมเนียม (เพิ่ม 12 ต.ค. 2026) — เกินแล้ว "ไม่เซ็น" ไม่ใช่แค่เตือน
+#    คิดแบบ Coldcard: ค่าธรรมเนียม ÷ ยอดรวมทุก output (รวมเงินทอน) · Coldcard เดิมล็อก 10% ตายตัว
+#    (blog.coinkite.com/coldcard-v110 · สูตรตาม commit ของ Sparrow ที่ทำให้ตรง Coldcard)
+#    จอยังเตือน "! FEE n% !" แบบเดิม (เทียบกับยอดส่งออก) ซึ่งเข้มกว่า — อันนี้คือด่านปฏิเสธ
+MAX_FEE_PCT = 10
+
+
+def fee_over_cap(fee, total_out):
+    """ค่าธรรมเนียมเกินเพดานไหม (ไม่รู้ค่าธรรมเนียม = ตัดสินที่นี่ไม่ได้ คืน False ให้ด่านอื่นปฏิเสธ)"""
+    if fee is None:
+        return False
+    if total_out <= 0:
+        return fee > 0
+    return fee * 100 > MAX_FEE_PCT * total_out
+
+
+class PSBTError(Exception):
+    pass
+
+
+class KVMap:
+    """key-value map ที่รักษาลำดับเดิมไว้ (MicroPython ไม่รับประกันลำดับของ dict)"""
+
+    def __init__(self):
+        self.items_ = []
+
+    def get(self, key, default=None):
+        for k, v in self.items_:
+            if k == key:
+                return v
+        return default
+
+    def put(self, key, val):
+        self.items_.append((key, val))
+
+    def keys(self):
+        return [k for k, _ in self.items_]
+
+    def items(self):
+        return list(self.items_)
+
+    def __contains__(self, key):
+        return self.get(key) is not None
+
+    def __len__(self):
+        return len(self.items_)
+
+
+# ชนิดคีย์ที่ "ห้ามมีข้อมูลต่อท้าย" (keydata ต้องว่าง)
+_BARE = {
+    "g": (GLOBAL_UNSIGNED_TX, GLOBAL_VERSION),
+    "i": (IN_NON_WITNESS_UTXO, IN_WITNESS_UTXO, IN_SIGHASH_TYPE, IN_REDEEM_SCRIPT,
+          IN_WITNESS_SCRIPT, IN_FINAL_SCRIPTSIG, IN_FINAL_SCRIPTWITNESS),
+    "o": (OUT_REDEEM_SCRIPT, OUT_WITNESS_SCRIPT),
+}
+# ชนิดคีย์ที่ keydata ต้องเป็น pubkey (33 หรือ 65 ไบต์)
+_PUBKEY = {
+    "g": (),
+    "i": (IN_PARTIAL_SIG, IN_BIP32_DERIVATION),
+    "o": (OUT_BIP32_DERIVATION,),
+}
+
+
+def _check_key(key, scope):
+    """ตรวจว่าคีย์ที่รู้จักมีความยาวถูกต้อง — คีย์ที่ไม่รู้จักปล่อยผ่าน (สเปกอนุญาต)"""
+    t = key[0]
+    data = key[1:]
+    if t in _BARE[scope]:
+        if data:
+            raise PSBTError("คีย์ชนิด 0x%02x ต้องไม่มีข้อมูลต่อท้าย (ยาว %d)" % (t, len(data)))
+    elif t in _PUBKEY[scope]:
+        if len(data) not in (33, 65):
+            raise PSBTError("คีย์ชนิด 0x%02x ต้องตามด้วย pubkey 33/65 ไบต์ (ได้ %d)"
+                            % (t, len(data)))
+    elif scope == "g" and t == GLOBAL_XPUB:
+        if len(data) != 78:
+            raise PSBTError("PSBT_GLOBAL_XPUB ต้องตามด้วย xpub 78 ไบต์ (ได้ %d)" % len(data))
+
+
+def _parse_map(b, i, scope):
+    """อ่าน key-value map หนึ่งชุด จนเจอ key ยาว 0 -> คืน (KVMap, ตำแหน่งถัดไป)"""
+    m = KVMap()
+    seen = set()          # ⚠️ ต้องเป็น set — list ทำให้ map ใหญ่ ๆ ช้าแบบ n^2
+    while True:
+        if i >= len(b):
+            raise PSBTError("ข้อมูลขาด: ไม่เจอตัวปิด map")
+        klen, i = read_varint(b, i)
+        if klen == 0:
+            return m, i
+        key = b[i:i + klen]
+        if len(key) != klen:
+            raise PSBTError("ข้อมูลขาดกลางคีย์")
+        i += klen
+        vlen, i = read_varint(b, i)
+        val = b[i:i + vlen]
+        if len(val) != vlen:
+            raise PSBTError("ข้อมูลขาดกลางค่า")
+        i += vlen
+        if key in seen:
+            raise PSBTError("คีย์ซ้ำใน map เดียวกัน")
+        seen.add(key)
+        _check_key(key, scope)
+        m.put(key, val)
+
+
+def _ser_map(m):
+    out = b""
+    for k, v in m.items():
+        out += ser_varint(len(k)) + k + ser_varbytes(v)
+    return out + b"\x00"
+
+
+def _parse_derivation(val):
+    """ค่าใน BIP32_DERIVATION = fingerprint 4 ไบต์ + index ละ 4 ไบต์"""
+    if len(val) < 4 or (len(val) - 4) % 4 != 0:
+        raise PSBTError("BIP32 derivation ยาวผิดรูป")
+    fp = val[:4]
+    path = [int.from_bytes(val[i:i + 4], "little") for i in range(4, len(val), 4)]
+    return fp, path
+
+
+def path_str(path):
+    out = "m"
+    for i in path:
+        if i >= bip32.HARDENED:
+            out += "/%dh" % (i - bip32.HARDENED)
+        else:
+            out += "/%d" % i
+    return out
+
+
+class PSBT:
+    def __init__(self):
+        self._deriv_steps = 0
+        self._prev_cache = {}   # n -> (value, spk) ที่ตรวจกับ tx เก่าแล้ว
+        self.tx = None
+        self.g = KVMap()     # global map ดิบ
+        self.inputs = []     # list ของ dict
+        self.outputs = []
+
+    # ---------- อ่าน / เขียน ----------
+
+    @classmethod
+    def parse(cls, raw):
+        if raw[:5] != MAGIC:
+            raise PSBTError("ไม่ใช่ PSBT (magic ไม่ตรง)")
+        p = cls()
+        i = 5
+        p.g, i = _parse_map(raw, i, "g")
+
+        raw_tx = p.g.get(bytes([GLOBAL_UNSIGNED_TX]))
+        if raw_tx is None:
+            raise PSBTError("ไม่มี unsigned tx ใน global map")
+        p.tx = Transaction.parse(raw_tx)
+
+        # unsigned tx ต้องเรียงแบบ legacy ห้ามมี marker/flag ของ segwit
+        if p.tx.segwit:
+            raise PSBTError("unsigned tx ต้องไม่เรียงแบบ segwit (มี marker/flag)")
+
+        # 🔴 input ซ้ำ (outpoint เดียวกัน 2 ครั้ง) = ธุรกรรมใช้ไม่ได้ และทำให้ยอดขาเข้า/ค่าธรรมเนียมบนจอเพี้ยน (12 ต.ค. 2026)
+        seen_op = set()
+        for inp in p.tx.vin:
+            op = bytes(inp.txid) + inp.vout.to_bytes(4, "little")
+            if op in seen_op:
+                raise PSBTError("DUPLICATE INPUT - same coin used twice")
+            seen_op.add(op)
+
+        # unsigned tx ต้องไม่มีลายเซ็นติดมา
+        for inp in p.tx.vin:
+            if inp.script_sig or inp.witness:
+                raise PSBTError("unsigned tx ต้องไม่มี scriptSig/witness")
+
+        for _ in range(len(p.tx.vin)):
+            m, i = _parse_map(raw, i, "i")
+            p.inputs.append(m)
+        for _ in range(len(p.tx.vout)):
+            m, i = _parse_map(raw, i, "o")
+            p.outputs.append(m)
+
+        if i != len(raw):
+            raise PSBTError("มีข้อมูลเกินท้ายไฟล์")
+        return p
+
+    @classmethod
+    def from_base64(cls, s):
+        return cls.parse(b64.b64decode(s))
+
+    def serialize(self):
+        out = MAGIC + _ser_map(self.g)
+        for m in self.inputs:
+            out += _ser_map(m)
+        for m in self.outputs:
+            out += _ser_map(m)
+        return out
+
+    def to_base64(self):
+        return b64.b64encode(self.serialize())
+
+    # ---------- ดึงข้อมูลที่ใช้ตัดสินใจ ----------
+
+    def _prev_out(self, n):
+        """(จำนวนซาโตชิ, scriptPubKey) ของ input ที่ n ที่ "พิสูจน์แล้ว" — None ถ้าไม่มี tx เก่าแนบมา
+
+        🔴 เชื่อเฉพาะ tx เก่าทั้งใบ (non-witness utxo) ที่แฮชแล้วตรง txid ที่ input อ้าง (แก้ 12 ต.ค. 2026)
+           เดิมเชื่อยอดใน witness utxo ตรง ๆ → เปิดช่อง CVE-2020-14199:
+           คนร้ายโกหกยอดของ input ทีละใบในการเซ็น 2 รอบ แต่ละรอบจอโชว์ค่าธรรมเนียมปกติ
+           แต่เอาลายเซ็นที่ใช้ได้จากทั้ง 2 รอบมารวมกัน = ค่าธรรมเนียมก้อนใหญ่ที่ผู้ใช้ไม่เคยเห็น
+           ลายเซ็น segwit ผูกยอดของ input ตัวเองเท่านั้น ไม่ผูกยอดของ input อื่น จึงกันด้วยลายเซ็นไม่ได้
+           แต่ txid ผูกทั้งใบ → ยอดที่อ่านจาก tx ที่แฮชตรง txid โกหกไม่ได้
+           wallet แนบ tx เก่าให้ทุก input อยู่แล้ว (server.js "Always include nonWitnessUtxo")
+        ถ้ามี witness utxo มาด้วยต้องตรงกันทุกไบต์ ไม่ตรง = มีคนแก้ PSBT → ปฏิเสธทั้งใบ
+        """
+        c = self._prev_cache.get(n)
+        if c is not None:
+            return c
+        m = self.inputs[n]
+        nwu = m.get(bytes([IN_NON_WITNESS_UTXO]))
+        if nwu is None:
+            return None
+        prev = Transaction.parse(nwu)
+        vin = self.tx.vin[n]
+        # เทียบ bytes ตรง ๆ (txid() คืน hex กลับด้าน · vin.txid เก็บแบบ little-endian ตามที่อยู่ในสาย)
+        if bytes(reversed(bytes.fromhex(prev.txid()))) != vin.txid:
+            raise PSBTError("non-witness utxo ของ input %d ไม่ตรงกับ txid ที่อ้าง" % n)
+        if vin.vout >= len(prev.vout):
+            raise PSBTError("input %d อ้าง output ที่ %d ที่ไม่มีใน tx เก่า" % (n, vin.vout))
+        out = prev.vout[vin.vout]
+        wu = m.get(bytes([IN_WITNESS_UTXO]))
+        if wu is not None:
+            spk, _ = txmod.read_varbytes(wu, 8)
+            if int.from_bytes(wu[:8], "little") != out.value or spk != out.script_pubkey:
+                raise PSBTError("witness utxo ของ input %d ไม่ตรงกับ tx เก่า" % n)
+        c = (out.value, out.script_pubkey)
+        self._prev_cache[n] = c
+        del prev
+        return c
+
+    def input_amount(self, n):
+        """จำนวนซาโตชิของ input ที่ n ที่พิสูจน์แล้ว — None ถ้าไม่มี tx เก่าแนบมา (ไม่เชื่อ witness utxo อย่างเดียว)"""
+        c = self._prev_out(n)
+        return None if c is None else c[0]
+
+    def input_script_pubkey(self, n):
+        c = self._prev_out(n)
+        return None if c is None else c[1]
+
+    def derivations(self, m, prefix):
+        """ดึง {pubkey: (fingerprint, path)} จาก map ที่ให้มา"""
+        out = {}
+        for k, v in m.items():
+            if k and k[0] == prefix:
+                out[k[1:]] = _parse_derivation(v)
+        return out
+
+    def fee(self):
+        """ค่าธรรมเนียม = ผลรวม input - ผลรวม output (None ถ้าข้อมูล input ไม่ครบ)"""
+        total_in = 0
+        for n in range(len(self.tx.vin)):
+            a = self.input_amount(n)
+            if a is None:
+                return None
+            total_in += a
+        total_out = sum(o.value for o in self.tx.vout)
+        if total_out > total_in:
+            raise PSBTError("ยอดขาออกมากกว่ายอดขาเข้า — PSBT ผิดปกติ")
+        return total_in - total_out
+
+    # ---------- ตรวจความเป็นเจ้าของ (ด่านความปลอดภัยหลัก) ----------
+
+    def _owned_keys(self, m, prefix, spk, root, fp_root):
+        """คืนรายการ (pubkey, path) ที่ 'พิสูจน์แล้ว' ว่าเป็นของเราจริง
+
+        ตรวจ 3 ชั้น — ขาดชั้นไหนก็ถือว่าไม่ใช่ของเรา:
+          1. fingerprint ตรงกับกุญแจแม่ของเรา
+          2. อนุพันธ์ตาม path แล้วได้ pubkey ตรงกับที่ระบุในคีย์
+             (กัน PSBT ปลอม path มั่ว ๆ มาหลอกว่าเป็นของเรา)
+          3. scriptPubKey ตรงกับที่ pubkey นั้นสร้างได้จริง
+             (กัน path ชี้ไป pubkey ที่ไม่ได้อยู่ในสคริปต์นั้นจริง)
+        """
+        found = []
+        checked = 0
+        for pub, (fp, path) in self.derivations(m, prefix).items():
+            if fp != fp_root:
+                continue
+            # ── กันค้าง: ดูรายละเอียดที่หัวไฟล์ (MAX_DERIV_*)
+            if len(path) > MAX_DERIV_DEPTH:
+                continue                      # ลึกผิดปกติ = ไม่ใช่ของเรา (fail-closed)
+            checked += 1
+            if checked > MAX_DERIV_PER_MAP:
+                break
+            self._deriv_steps += len(path)
+            if self._deriv_steps > MAX_DERIV_STEPS:
+                raise PSBTError("PSBT ใหญ่เกินที่เครื่องนี้รับได้ (ไล่กุญแจเกิน %d ชั้น)"
+                                % MAX_DERIV_STEPS)
+            try:
+                node = root
+                for idx in path:
+                    node = node.derive_child(idx)
+            except Exception:
+                continue
+            if node.pubkey != pub:               # ชั้นที่ 2
+                continue
+            if spk is not None:                  # ชั้นที่ 3
+                import address as addr
+                if spk != addr.p2wpkh_script(pub) and spk != addr.p2pkh_script(pub):
+                    continue
+            found.append((pub, path, node))
+        return found
+
+    def _max_input_index(self, fp_root, acct=CHANGE_ACCOUNT):
+        """เลขที่อยู่สูงสุดที่ input ของเราใช้ — เอาไว้กำหนดช่วงที่เงินทอนควรอยู่
+
+        🔑 อ่านจากที่ PSBT ประกาศมาเฉย ๆ ไม่ไล่กุญแจจริง (ไล่กุญแจกินเวลา ~0.5 วิ/ชั้นบน Pico)
+           ปลอดภัยเพราะถ้าคนร้ายโกหกเส้นทาง input เพื่อถ่างช่วงนี้ให้กว้างขึ้น
+           ตอนเซ็นจริง _owned_keys จะไล่กุญแจแล้วจับได้ว่าไม่ตรง -> ไม่เซ็นให้
+           ธุรกรรมที่ออกมาจึงใช้ไม่ได้อยู่ดี ไม่มีใครเสียเงิน
+        """
+        best = -1
+        for m in self.inputs:
+            for _pub, (fp, path) in self.derivations(m, IN_BIP32_DERIVATION).items():
+                if fp != fp_root or len(path) != CHANGE_DEPTH:
+                    continue
+                if tuple(path[:3]) != acct or path[3] not in CHANGE_CHAINS:
+                    continue
+                if path[4] > best:
+                    best = path[4]
+        return best
+
+    def _is_change_path(self, path, max_in_idx, acct=CHANGE_ACCOUNT):
+        """เส้นทางนี้เป็น "เงินทอนที่กระเป๋าจะหาเจอ" จริงไหม"""
+        if len(path) != CHANGE_DEPTH:
+            return False
+        if tuple(path[:3]) != acct:
+            return False
+        if path[3] not in CHANGE_CHAINS:
+            return False
+        idx = path[4]
+        if idx >= HARDENED or idx > CHANGE_INDEX_CAP:
+            return False
+        limit = (max_in_idx if max_in_idx >= 0 else 0) + CHANGE_GAP
+        return idx <= limit
+
+    def describe(self, root, testnet=False, account=0):
+        """สรุปสิ่งที่ผู้ใช้ต้องยืนยันก่อนเซ็น
+
+        account = BIP84 account ที่ผู้ใช้เลือกไว้ (m/84h/0h/<account>h) ใช้ตัดสินว่า output ไหนเป็นเงินทอน
+
+        คืน dict: outputs (พร้อมธง is_change ที่พิสูจน์แล้ว), fee, ยอดที่ออกจากกระเป๋า
+        """
+        import address as addr
+
+        fp_root = root.my_fingerprint()
+        acct = change_account(account)
+        self._deriv_steps = 0
+        max_in_idx = self._max_input_index(fp_root, acct)
+        total_in = 0
+        unknown_in = 0
+        # 🔴 input ของเรามาจาก account ไหน (แก้บัค F 15 ก.ย. 2026)
+        #    เดิมเลือก account 1 อยู่ แต่ PSBT ใช้เหรียญของ account 0 ก็เซ็นให้เงียบ ๆ
+        #    อ่านจากเส้นทางที่ PSBT ประกาศ (เร็ว ไม่ไล่กุญแจ) — ถ้าคนร้ายโกหกเส้นทาง
+        #    sign(account=) จะไล่กุญแจจริงแล้วไม่เซ็นให้อยู่ดี
+        inputs_mine = 0
+        input_accounts = []
+        inputs_wrong_account = 0
+        for n in range(len(self.tx.vin)):
+            a = self.input_amount(n)
+            if a is None:
+                unknown_in += 1
+            else:
+                total_in += a
+            decl = [path for _pub, (fp, path) in self.derivations(self.inputs[n], IN_BIP32_DERIVATION).items()
+                    if fp == fp_root]
+            if decl:
+                inputs_mine += 1
+                ia = _bip84_account(decl[0])
+                if ia not in input_accounts:
+                    input_accounts.append(ia)
+                if ia != account:
+                    inputs_wrong_account += 1
+
+        outs = []
+        sending = 0
+        change = 0
+        for n, o in enumerate(self.tx.vout):
+            owned = self._owned_keys(self.outputs[n], OUT_BIP32_DERIVATION,
+                                     o.script_pubkey, root, fp_root)
+            # เป็นกุญแจเราอย่างเดียวยังไม่พอ — เส้นทางต้องอยู่ในช่วงที่กระเป๋าจะหาเจอด้วย
+            # 🔴 และต้องเป็นที่อยู่แบบ bc1q (p2wpkh) เท่านั้น (แก้ 11 ต.ค. 2026 · ตรวจโค้ดหลังข่าว Ledger)
+            #    _owned_keys ยอม p2pkh ด้วย → เงินทอนไปที่อยู่ "1..." ของกุญแจเดียวกันถูกนับเป็น CHG
+            #    จอไม่โชว์ที่อยู่ แต่กระเป๋า BIP84 ไม่เฝ้าที่อยู่แบบ 1... = เงินหายไปจากสายตา
+            #    แบบเดียวกับเส้นทางแปลก (11 ก.ย.) → ไม่นับเป็นเงินทอน ให้ไปโผล่เป็นปลายทางแทน
+            is_change = any(self._is_change_path(pth, max_in_idx, acct)
+                            and o.script_pubkey == addr.p2wpkh_script(_pub)
+                            for _pub, pth, _node in owned)
+            # ของเราแต่เส้นทางแปลก = ถือเป็นการจ่ายออก แต่ติดธงไว้ให้จอเตือนได้
+            odd_owned = bool(owned) and not is_change
+            if is_change:
+                change += o.value
+            else:
+                sending += o.value
+            outs.append({
+                "index": n,
+                "address": addr.script_to_address(o.script_pubkey, testnet),
+                "value": o.value,
+                "is_change": is_change,
+                "odd_owned": odd_owned,
+                "path": path_str(owned[0][1]) if owned else None,
+            })
+
+        fee = None if unknown_in else total_in - sum(o.value for o in self.tx.vout)
+
+        # 🔴 locktime: เดิมไม่เคยอ่านค่านี้เลย (เพิ่ม 12 ก.ย. 2026)
+        #    ธุรกรรมระบุได้ว่า "ห้ามใช้ก่อนบล็อกที่ N" หรือ "ก่อนเวลา T"
+        #    ถ้าไม่บอกผู้ใช้ เขาจะเซ็นแล้วส่งไม่ออกโดยไม่รู้สาเหตุ
+        #    และถ้า nSequence ทุกช่องเป็น 0xffffffff -> locktime ไม่มีผลจริง (กับดักที่ Coldcard ดักไว้)
+        lt = self.tx.locktime
+        seqs = [i.sequence for i in self.tx.vin]
+        return {
+            "inputs": len(self.tx.vin),
+            "inputs_mine": inputs_mine,                  # input ที่ประกาศว่าเป็นกุญแจเรา
+            "input_accounts": input_accounts,            # account ของ input เหล่านั้น (None = เส้นทางแปลก)
+            "inputs_wrong_account": inputs_wrong_account,  # อยู่นอก account ที่ผู้ใช้เลือก
+            "inputs_unknown_amount": unknown_in,
+            "total_in": total_in,
+            "outputs": outs,
+            "sending": sending,     # ยอดที่ออกจากกระเป๋าจริง
+            "change": change,
+            "fee": fee,
+            "locktime": lt,
+            "locktime_is_time": lt >= 500000000,
+            "locktime_no_effect": lt > 0 and all(q == 0xFFFFFFFF for q in seqs),
+            "rbf": any(q < 0xFFFFFFFE for q in seqs),
+            "fee_over_cap": fee_over_cap(fee, sum(o.value for o in self.tx.vout)),
+        }
+
+    # ---------- เซ็น ----------
+
+    def sign(self, root, sighash_type=1, account=None):
+        """เซ็นทุก input ที่พิสูจน์ได้ว่าเป็นของเรา — คืนจำนวน input ที่เซ็นไป
+
+        account = ถ้าระบุ เซ็นเฉพาะ input ที่ไล่กุญแจแล้วอยู่ใน m/84h/0h/<account>h เท่านั้น
+                  (ชั้นที่ 2 ของการแก้บัค F — UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันซ้ำอีกชั้น)
+
+        รองรับ p2wpkh (native segwit) เท่านั้น
+        input ชนิดอื่นจะข้ามไป ไม่เซ็นมั่ว
+        """
+        import address as addr
+
+        # ด่านซ้ำของเพดานค่าธรรมเนียม — UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันอีกชั้น (fee() ไม่รู้ยอด = None ไปตกด่าน "ไม่มีจำนวนเงิน" ข้างล่าง)
+        if fee_over_cap(self.fee(), sum(o.value for o in self.tx.vout)):
+            raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
+
+        fp_root = root.my_fingerprint()
+        acct_t = change_account(account) if account is not None else None
+        self._deriv_steps = 0
+        signed = 0
+        for n in range(len(self.tx.vin)):
+            m = self.inputs[n]
+            spk = self.input_script_pubkey(n)
+            if spk is None:
+                continue
+            owned = self._owned_keys(m, IN_BIP32_DERIVATION, spk, root, fp_root)
+            if not owned:
+                continue
+            pick = None
+            for o in owned:
+                if acct_t is None or tuple(o[1][:3]) == acct_t:
+                    pick = o
+                    break
+            if pick is None:
+                continue          # กุญแจเรา แต่อยู่นอก account ที่เลือก — ไม่เซ็น
+            pub, path, node = pick
+
+            if spk != addr.p2wpkh_script(pub):
+                continue      # ยังไม่รองรับชนิดอื่น — ข้าม ดีกว่าเซ็นผิด
+
+            amount = self.input_amount(n)
+            if amount is None:
+                raise PSBTError("input %d ไม่มีจำนวนเงิน เซ็นไม่ได้อย่างปลอดภัย" % n)
+
+            digest = self.tx.sighash_segwit_v0(
+                n, addr.p2wpkh_script_code(pub), amount, sighash_type)
+            r, s = ec.sign(digest, node.key)
+            # 🔴 ตรวจลายเซ็นตัวเองก่อนส่งออก (verify-after-sign · เพิ่ม 12 ต.ค. 2026)
+            #    nonce แบบ RFC6979 ได้ค่าเดิมทุกครั้ง → ถ้าการคำนวณพลาดแม้รอบเดียว (บั๊ก/ไฟกระตุก/ตั้งใจรบกวน)
+            #    ลายเซ็นผิด 1 ใบ + ลายเซ็นถูกของ sighash เดียวกัน = แก้สมการหา private key ได้
+            #    ตรวจด้วย pubkey ที่ derive ได้เอง ไม่ผ่าน = ไม่ใส่ลายเซ็น ทิ้งทั้งใบ
+            #    (ช้าขึ้น ~2 การคูณจุดต่อ input · Coldcard/Jade ก็ตรวจแบบนี้ ตามที่ Gemini บอก ยังไม่ได้ยืนยันเอง)
+            if not ec.verify(digest, (r, s), pub):
+                raise PSBTError("SIG VERIFY FAIL input %d - not signed" % n)
+            m.put(bytes([IN_PARTIAL_SIG]) + pub,
+                  _der(r, s) + bytes([sighash_type]))
+            signed += 1
+        return signed
+
+
+def _der(r, s):
+    """เข้ารหัสลายเซ็นแบบ DER ตามที่บิตคอยน์ใช้"""
+    def enc(v):
+        b = v.to_bytes(32, "big").lstrip(b"\x00")
+        if not b:
+            b = b"\x00"
+        if b[0] & 0x80:
+            b = b"\x00" + b
+        return b"\x02" + bytes([len(b)]) + b
+    body = enc(r) + enc(s)
+    return b"\x30" + bytes([len(body)]) + body
