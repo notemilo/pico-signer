@@ -56,17 +56,35 @@ Out of scope / accepted:
    truncated/odd transaction make `describe()` and `sign()` see different data than a node would?
 6. **Dice entropy**: 1 bit per roll from parity. Last word is chosen from the 2^k checksum-valid
    candidates by extra rolls (`dice.last_word_from_rolls`). Is there any bias?
-7. **USB**: on entering a real seed, `ui.usb_data_off()` activates a runtime USB device with no
-   interfaces and `BUILTIN_NONE`. Is there any remaining way to reach the REPL over USB?
+7. **USB**: `boot.py` (runs before USB init) activates a runtime USB device with no interfaces and
+   `BUILTIN_NONE` unless button B is held; `ui.usb_data_off()` does the same when a real seed is entered
+   after a B-held boot. Is there any remaining way to reach the REPL over USB?
 8. **libsecp256k1 bridge**: context is preallocated and never randomized; illegal-argument callbacks are
    replaced so they return instead of aborting. Any misuse of the API?
+
+## Fixed after outside review (2026-10-13)
+
+Thanks to the reviewers. Fixed, each with a regression test:
+
+- **Hidden change via a fake extra BIP32 derivation on a real input** (high) — the change-index window now
+  counts only input derivations proven by key derivation + script match (`test_psbt_attacks.py` #19).
+- USB data now off from power-on via `boot.py` (hold B for dev mode).
+- PSBT already carrying a signature for our key / finalized input → refused (#20).
+- `crash.txt` no longer stores exception messages; BIP39 errors no longer echo the typed word.
+- libsecp256k1 bridge checks the illegal-argument flag after every call; error callback never returns.
+- Strict transaction parsing (bounds, canonical varints, no trailing bytes, exact round-trip) — `test_tx_strict.py`.
+- BIP39 rejects non-ASCII mnemonic/passphrase (no NFKD available in MicroPython).
+- BBQr total size cap (~39 KB) and out-of-memory handling.
 
 ## Known limitations (no need to report)
 
 - No PIN, no secure boot, no secure element.
+- App code (`*.py`) lives on the filesystem, not in the firmware image, so the firmware hash does not
+  cover it. Freezing the app into the firmware is a possible later step.
 - MicroPython cannot reliably wipe immutable `bytes` from RAM; power-off is the real wipe.
 - BBQr has no set ID, so frames from two different PSBTs with the same frame count could mix
   (the result fails to parse, or is shown in full on the review screen).
+- App code is not frozen into the firmware (see above); someone with physical access and button B can change it.
 - Dust outputs and multiple change outputs are not warned about yet.
 - Pure-Python BIP32/HMAC/PBKDF2 are not constant-time.
 
@@ -76,5 +94,5 @@ Out of scope / accepted:
 ./run_tests.sh          # CPython; interop tests need node (cd tests/interop && npm ci)
 ```
 
-`tests/test_psbt_attacks.py` lists the PSBT attacks already covered (18 cases).
+`tests/test_psbt_attacks.py` lists the PSBT attacks already covered (20 cases).
 Firmware build steps are in [README.md](README.md#firmware).

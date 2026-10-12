@@ -452,6 +452,16 @@ try:
 finally:
     ui.usb_data_off = real_off
 check("บนแมค (ไม่มี machine) usb_data_off คืน False ไม่พัง", ui.usb_data_off() is False)
+# 13 ต.ค. 2026: boot.py ปิด USB ตั้งแต่บูต → App ต้องรู้ตั้งแต่เริ่ม และไม่ถามซ้ำ
+real_is_off = ui.usb_is_off
+try:
+    ui.usb_is_off = lambda: True
+    app = new_app()
+    left = drive(lambda: _REAL_GUARD(app), [])
+    check("boot ปิด USB แล้ว → usb_off=True ตั้งแต่เริ่ม · guard ไม่ขึ้นหน้าซ้ำ", app.usb_off and left == 0 and not LOG)
+finally:
+    ui.usb_is_off = real_is_off
+check("บนแมค usb_is_off คืน False ไม่พัง", ui.usb_is_off() is False)
 
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:

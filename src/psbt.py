@@ -41,7 +41,7 @@ OUT_BIP32_DERIVATION = 0x02
 #    เส้นทางจริง: m/84h/0h/0h/1/5 = 5 ชั้น · multisig m/48h/0h/0h/2h/0/5 = 6 ชั้น
 MAX_DERIV_DEPTH = 8        # ชั้น
 MAX_DERIV_PER_MAP = 4      # รายการที่อ้าง fingerprint เราต่อ input/output
-MAX_DERIV_STEPS = 600      # ชั้นรวมทั้ง PSBT (~ 100 input x 5 ชั้น + เงินทอน)
+MAX_DERIV_STEPS = 1200     # ชั้นรวมทั้ง PSBT (~ 100 input x 5 ชั้น ไล่ทั้งตอนหาช่วงทอน + output · ขยายจาก 600 เมื่อ 12 ต.ค. 2026)
 
 # 🔴 เงินทอนต้องอยู่บนเส้นทางที่ "เครื่องนี้" ใช้จริงเท่านั้น (แก้ 11 ก.ย. 2026)
 #    เดิมนับเป็นเงินทอนถ้าพิสูจน์ได้ว่าเป็นกุญแจเราล้วน ๆ โดยไม่สนเส้นทาง
@@ -392,22 +392,44 @@ class PSBT:
             found.append((pub, path, node))
         return found
 
-    def _max_input_index(self, fp_root, acct=CHANGE_ACCOUNT):
-        """เลขที่อยู่สูงสุดที่ input ของเราใช้ — เอาไว้กำหนดช่วงที่เงินทอนควรอยู่
+    def _check_not_presigned(self, fp_root):
+        """ปฏิเสธ PSBT ที่มีลายเซ็นของกุญแจเรา (หรือ input ที่ปิดงานแล้ว) ติดมาตั้งแต่ต้น
 
-        🔑 อ่านจากที่ PSBT ประกาศมาเฉย ๆ ไม่ไล่กุญแจจริง (ไล่กุญแจกินเวลา ~0.5 วิ/ชั้นบน Pico)
-           ปลอดภัยเพราะถ้าคนร้ายโกหกเส้นทาง input เพื่อถ่างช่วงนี้ให้กว้างขึ้น
-           ตอนเซ็นจริง _owned_keys จะไล่กุญแจแล้วจับได้ว่าไม่ตรง -> ไม่เซ็นให้
-           ธุรกรรมที่ออกมาจึงใช้ไม่ได้อยู่ดี ไม่มีใครเสียเงิน
+        🔴 13 ต.ค. 2026 (ผู้รีวิวภายนอก ข้อ 4): sign() ใช้ put ต่อท้าย ไม่ลบของเดิม
+           ถ้าคนสร้าง PSBT แปะ PARTIAL_SIG ปลอมของ pubkey เรามาก่อน ไฟล์ที่ส่งออกจะมีคีย์ซ้ำ (ผิด BIP174)
+           และตัวอ่านหลายตัวหยิบตัวแรก = ลายเซ็นปลอม → "ดูเหมือนเซ็นแล้วแต่ใช้ไม่ได้"
+           input ที่มี FINAL_SCRIPTSIG/FINAL_SCRIPTWITNESS แล้วก็ไม่ควรมาให้เซ็นอีก
+        """
+        for n, m in enumerate(self.inputs):
+            ours = [pub for pub, (fp, _p) in self.derivations(m, IN_BIP32_DERIVATION).items()
+                    if fp == fp_root]
+            for k, _v in m.items():
+                if not k:
+                    continue
+                if k[0] == IN_PARTIAL_SIG and k[1:] in ours:
+                    raise PSBTError("ALREADY SIGNED input %d - signature for our key present" % n)
+                if k[0] in (IN_FINAL_SCRIPTSIG, IN_FINAL_SCRIPTWITNESS) and ours:
+                    raise PSBTError("ALREADY FINAL input %d - nothing to sign" % n)
+
+    def _max_input_index(self, root, fp_root, acct=CHANGE_ACCOUNT):
+        """เลขที่อยู่สูงสุดของ input ที่ "พิสูจน์แล้ว" ว่าเป็นของเรา — กำหนดช่วงที่เงินทอนควรอยู่
+
+        🔴 แก้ 12 ต.ค. 2026 (ผู้รีวิวภายนอกเจอ + มี PoC · เทสข้อ 19):
+           เดิมอ่านเลขจากเส้นทางที่ PSBT "ประกาศ" เฉย ๆ โดยเชื่อว่า sign() จะจับได้ถ้าโกหก
+           แต่คนร้ายไม่ต้องแก้รายการจริง แค่ "เพิ่มรายการที่ 2" ใน input จริงของเรา
+           (pubkey มั่ว + fingerprint เรา + m/84h/0h/0h/0/99999) → ช่วงเงินทอนถ่างไปถึง 100,000
+           → เงินทอนที่ index 100,000 ถูกซ่อนเป็น CHG · sign() เจอรายการจริงก็เซ็นให้ครบ
+           ตอนนี้: นับเฉพาะรายการที่ผ่าน _owned_keys (ไล่กุญแจแล้ว pubkey ตรง + script ตรง)
+           ช้าขึ้นเพราะต้องไล่กุญแจของ input ด้วย (ใช้งบ MAX_DERIV_STEPS ร่วมกับ output)
         """
         best = -1
-        for m in self.inputs:
-            for _pub, (fp, path) in self.derivations(m, IN_BIP32_DERIVATION).items():
-                if fp != fp_root or len(path) != CHANGE_DEPTH:
-                    continue
-                if tuple(path[:3]) != acct or path[3] not in CHANGE_CHAINS:
-                    continue
-                if path[4] > best:
+        for n, m in enumerate(self.inputs):
+            spk = self.input_script_pubkey(n)
+            if spk is None:
+                continue
+            for _pub, path, _node in self._owned_keys(m, IN_BIP32_DERIVATION, spk, root, fp_root):
+                if (len(path) == CHANGE_DEPTH and tuple(path[:3]) == acct
+                        and path[3] in CHANGE_CHAINS and path[4] > best):
                     best = path[4]
         return best
 
@@ -435,9 +457,10 @@ class PSBT:
         import address as addr
 
         fp_root = root.my_fingerprint()
+        self._check_not_presigned(fp_root)
         acct = change_account(account)
         self._deriv_steps = 0
-        max_in_idx = self._max_input_index(fp_root, acct)
+        max_in_idx = self._max_input_index(root, fp_root, acct)
         total_in = 0
         unknown_in = 0
         # 🔴 input ของเรามาจาก account ไหน (แก้บัค F 15 ก.ย. 2026)
@@ -536,6 +559,7 @@ class PSBT:
             raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
 
         fp_root = root.my_fingerprint()
+        self._check_not_presigned(fp_root)
         acct_t = change_account(account) if account is not None else None
         self._deriv_steps = 0
         signed = 0

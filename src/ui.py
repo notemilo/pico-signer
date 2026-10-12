@@ -140,6 +140,16 @@ def ec_backend():
     return secp256k1.backend()
 
 
+def usb_is_off():
+    """boot.py ปิดช่องข้อมูล USB ไปแล้วหรือยัง (13 ต.ค. 2026: ปิดตั้งแต่บูต เว้นแต่กด B ค้าง)"""
+    try:
+        import machine
+        u = machine.USBDevice()
+        return bool(u.active()) and u.builtin_driver is u.BUILTIN_NONE
+    except Exception:
+        return False
+
+
 def usb_data_off():
     """ปิดช่องข้อมูล USB ทั้งหมด — คืน True ถ้าปิดได้ (บนแมค/CPython ไม่มี machine = False)"""
     try:
@@ -167,7 +177,7 @@ class App:
         self.root = None
         self.is_test = False
         self.account = 0             # BIP84 account ที่เลือกตอนโหลด seed (m/84h/0h/<n>h)
-        self.usb_off = False         # ปิดช่องข้อมูล USB ไปแล้วไหม (กลับมาได้ทางเดียวคือปิดเปิดเครื่อง)
+        self.usb_off = usb_is_off()  # ปิดช่องข้อมูล USB ไปแล้วไหม (boot.py ปิดให้ตั้งแต่บูต · กลับมาได้ทางเดียวคือปิดเปิดเครื่อง)
 
     # ── ระดับล่าง: อ่านปุ่มแบบกดทีละครั้ง ────────────────────────────
     def wait_key(self, allow=None, timeout_ms=None):
@@ -1184,6 +1194,12 @@ class App:
                         t_last = time.ticks_ms()
                 if raw_b64 or dec.done:
                     break
+                # 13 ต.ค. 2026: QR ชุดใหญ่เกินเพดาน (bbqr.Decoder.MAX_TOTAL_CHARS) — บอกเลย ไม่ต้องรอหมดเวลา
+                if dec.too_big and not dec.have:
+                    self.message("REFUSED", ["QR TOO BIG", "", "MAX %d KB" % (dec.MAX_TOTAL_CHARS * 5 // 8 // 1024),
+                                             "", "NOT A NORMAL", "PSBT"], "A=BACK", lcd.RED)
+                    self.wait_key(("A", "CTRL", "B"))
+                    return
 
                 have = dec.have
                 if have != drawn:
@@ -1213,7 +1229,16 @@ class App:
             self.screen_sign(raw_b64)
             return
 
-        res = dec.result()
+        try:
+            res = dec.result()
+        except MemoryError:
+            # 13 ต.ค. 2026 (รีวิวภายนอก ข้อ 6): แรมไม่พอถอด = ปฏิเสธ ไม่ใช่ค้าง/CRASH
+            res = None
+            del dec
+            gc.collect()
+            self.message("REFUSED", ["OUT OF MEMORY", "DECODING QR", "", "PSBT TOO BIG"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
+            return
         if res is None:
             self.message("BAD QR", ["FRAMES OK BUT", "DECODE FAILED"], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))

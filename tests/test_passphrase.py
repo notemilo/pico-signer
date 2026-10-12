@@ -85,6 +85,23 @@ def main():
     print("4. ว่าง / 'x' / 'X' ได้คนละกระเป๋า  %s %s %s  %s"
           % (a.upper(), b.upper(), c.upper(), "ผ่าน" if ok else "ไม่ผ่าน"))
 
+    # 5) อักขระนอก ASCII ต้องโดนปฏิเสธ — ทำ NFKD ไม่ได้บน MicroPython (รีวิวภายนอก F-02 · 13 ต.ค. 2026)
+    mn12 = "abandon " * 11 + "about"
+    rej = []
+    for pp in ("caf\u00e9", "cafe\u0301", "\u0e17\u0e14\u0e2a\u0e2d\u0e1a", "a\nb", "a\tb"):
+        try:
+            bip39.seed(mn12, pp)
+        except ValueError:
+            rej.append(pp)
+    try:
+        ascii_ok = len(bip39.seed(mn12, " !~Az09")) == 64
+    except ValueError:
+        ascii_ok = False
+    ok = len(rej) == 5 and ascii_ok
+    fails += not ok
+    print("5. นอก ASCII ปฏิเสธ %d/5 · ASCII ปกติ (รวมช่องว่าง/สัญลักษณ์) ผ่าน %s  %s"
+          % (len(rej), ascii_ok, "ผ่าน" if ok else "ไม่ผ่าน"))
+
     print()
     if fails:
         print("ไม่ผ่าน %d ข้อ" % fails)

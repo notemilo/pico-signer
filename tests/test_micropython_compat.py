@@ -92,11 +92,12 @@ def main():
         for lineno, what in bad:
             total += 1
             print("  %s:%d  ใช้ %s ซึ่งเครื่องไม่มี" % (fn, lineno, what))
-    # ตรวจ main.py ด้วย
-    m = os.path.join(HERE, "..", "main.py")
-    for lineno, what in scan(m):
-        total += 1
-        print("  main.py:%d  ใช้ %s ซึ่งเครื่องไม่มี" % (lineno, what))
+    # ตรวจ main.py กับ boot.py ด้วย
+    for top in ("main.py", "boot.py"):
+        m = os.path.join(HERE, "..", top)
+        for lineno, what in scan(m):
+            total += 1
+            print("  %s:%d  ใช้ %s ซึ่งเครื่องไม่มี" % (top, lineno, what))
     print()
     if total:
         print("พบ %d จุดที่จะพังบนเครื่อง" % total)

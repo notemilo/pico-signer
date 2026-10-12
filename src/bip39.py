@@ -54,7 +54,7 @@ def mnemonic_to_entropy(mnemonic, path="english.txt"):
         try:
             bits += "{:011b}".format(words.index(w))
         except ValueError:
-            raise ValueError("ไม่พบคำนี้ใน wordlist: %s" % w)
+            raise ValueError("ไม่พบคำนี้ใน wordlist (คำที่ %d)" % (parts.index(w) + 1))  # ไม่ใส่ตัวคำ — อาจเป็นคำ seed (13 ต.ค. 2026)
     checksum_len = len(parts) * 11 // 33
     entropy_bits, checksum_bits = bits[:-checksum_len], bits[-checksum_len:]
     entropy = bytes(int(entropy_bits[i:i + 8], 2) for i in range(0, len(entropy_bits), 8))
@@ -101,7 +101,7 @@ def last_word_candidates(partial, path="english.txt"):
         try:
             bits += "{:011b}".format(words.index(w))
         except ValueError:
-            raise ValueError("ไม่พบคำนี้ใน wordlist: %s" % w)
+            raise ValueError("ไม่พบคำนี้ใน wordlist (คำที่ %d)" % (parts.index(w) + 1))  # ไม่ใส่ตัวคำ — อาจเป็นคำ seed (13 ต.ค. 2026)
 
     out = []
     for v in range(1 << ent_bits_in_last):
@@ -116,9 +116,16 @@ def seed(mnemonic, passphrase=""):
     """mnemonic -> seed 64 ไบต์ (BIP39: PBKDF2-HMAC-SHA512, 2048 รอบ)
 
     หมายเหตุ: BIP39 กำหนดให้ normalize เป็น NFKD ก่อน
-    wordlist อังกฤษเป็น ASCII ล้วนจึงไม่มีผล แต่ passphrase ที่มีอักขระ
-    นอก ASCII จะต้อง normalize มาก่อนเรียกฟังก์ชันนี้
+    wordlist อังกฤษเป็น ASCII ล้วน และ NFKD ของ ASCII = ตัวเดิม จึงไม่มีผล
+
+    🔴 13 ต.ค. 2026 (รีวิวภายนอก F-02): MicroPython ไม่มี unicodedata ทำ NFKD ไม่ได้
+       อักขระนอก ASCII (เช่น é ที่เขียนได้ 2 แบบ) จะได้ seed ต่างจากกระเป๋าอื่นแบบเงียบ ๆ
+       → ปฏิเสธตั้งแต่ระดับฟังก์ชัน (หน้าจอพิมพ์ passphrase ก็รับแค่ ASCII อยู่แล้ว · นี่คือด่านกันพลาด)
     """
+    for label, txt in (("mnemonic", mnemonic), ("passphrase", passphrase)):
+        for ch in txt:
+            if ord(ch) > 0x7E or ord(ch) < 0x20:
+                raise ValueError("%s ต้องเป็นตัวอักษรอังกฤษ/สัญลักษณ์ ASCII เท่านั้น (ทำ NFKD ไม่ได้)" % label)
     return pbkdf2_hmac_sha512(
         mnemonic.encode("utf-8"),
         ("mnemonic" + passphrase).encode("utf-8"),

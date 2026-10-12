@@ -35,11 +35,11 @@ else:
         # อย่าให้ตายเงียบ ๆ — โชว์บนจอด้วยถ้าจอยังใช้ได้
         import sys
         sys.print_exception(e)
-        # เก็บ traceback เต็มลงไฟล์ — จอกว้างแค่ 29 ตัว ชื่อ attribute
-        # หรือเลขบรรทัดที่ต้องใช้ดีบักมักโดนตัดหายไปพอดี
+        # เก็บ traceback ลงไฟล์ — จอกว้างแค่ 29 ตัว เลขบรรทัดที่ต้องใช้ดีบักมักโดนตัดหายไปพอดี
+        # 🔴 13 ต.ค. 2026: เก็บแค่ไฟล์/บรรทัด/ชนิด error ไม่เก็บข้อความ (อาจมีคำ seed) — ดู crashlog.py
         try:
-            with open("crash.txt", "w") as f:
-                sys.print_exception(e, f)
+            import crashlog
+            crashlog.save(e)
         except Exception:
             pass
         try:

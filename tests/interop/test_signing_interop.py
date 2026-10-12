@@ -60,11 +60,19 @@ M24 = ("legal winner thank year wave sausage worth useful legal winner thank yel
 for label, mn, pw in [
     ("12 คำ ไม่มี passphrase", M12, ""),
     ("12 คำ + passphrase", M12, "TREZOR"),
-    ("24 คำ + passphrase ไทย", M24, "รหัสลับของผม"),
+    ("24 คำ + passphrase สัญลักษณ์", M24, "P@ss w0rd! ~{}"),
     ("24 คำ + passphrase ยาว", M24, "x" * 100),
 ]:
     ours = bip39.seed(mn, pw).hex()
     check(label, ours, js("seed", mnemonic=mn, passphrase=pw)["seed"])
+# 13 ต.ค. 2026: passphrase นอก ASCII ต้องโดนปฏิเสธ (MicroPython ทำ NFKD ไม่ได้)
+#   ตัวอย่างจริง: "ำ" (U+0E33) NFKD แตกเป็น U+0E4D U+0E32 → กระเป๋าที่ทำ NFKD ได้ seed คนละค่า
+try:
+    bip39.seed(M24, "\u0e04\u0e33")
+    thai_rejected = False
+except ValueError:
+    thai_rejected = True
+check("passphrase ไทยโดนปฏิเสธ (ทำ NFKD ไม่ได้)", thai_rejected, True)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── 2. BIP32: seed → กุญแจ/xpub/ที่อยู่ ตาม path ────────────────")

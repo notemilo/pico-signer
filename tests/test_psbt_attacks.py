@@ -305,6 +305,54 @@ def main():
     fails += not ok
     print("18. input ซ้ำ                 : %s  %s" % (why, "ผ่าน" if ok else "ไม่ผ่าน"))
 
+    # 19) derivation ปลอมรายการที่ 2 ใน input จริงของเรา ถ่างช่วงเงินทอน → ซ่อนทอนที่ index 100,000
+    #     พบโดยผู้รีวิวภายนอก 12 ต.ค. 2026 (มี PoC) · เดิม hidden=1 signed=1 · ต้องไม่ถูกซ่อน
+    far = (84 + H, 0 + H, 0 + H, 1, 100000)
+    node = ROOT
+    for idx in far:
+        node = node.derive_child(idx)
+    ps = psbt.PSBT.parse(RAW)
+    for n, o in enumerate(ps.tx.vout):
+        m = ps.outputs[n]
+        if any(k[0] == OUT_DERIV for k, _ in m.items_):
+            o.script_pubkey = addr.p2wpkh_script(node.pubkey)
+            m.items_ = [(k, v) for k, v in m.items_ if k[0] != OUT_DERIV]
+            m.items_.append((bytes([OUT_DERIV]) + node.pubkey,
+                             FP + b"".join(v.to_bytes(4, "little") for v in far)))
+    ps.inputs[0].items_.append((bytes([IN_DERIV]) + b"\x02" + b"\x11" * 32,
+                                FP + b"".join(v.to_bytes(4, "little") for v in (84 + H, 0 + H, 0 + H, 0, 99999))))
+    ps.g.items_ = [(k, v) for k, v in ps.g.items_ if k[0] != psbt.GLOBAL_UNSIGNED_TX]
+    ps.g.items_.insert(0, (bytes([psbt.GLOBAL_UNSIGNED_TX]), ps.tx.serialize(with_witness=False)))
+    p = attach_prev(psbt.PSBT.parse(ps.serialize()))
+    info = p.describe(ROOT)
+    hidden = sum(o["is_change"] for o in info["outputs"])
+    shown = [o for o in info["outputs"] if o.get("odd_owned")]
+    ok = hidden == 0 and len(shown) == 1
+    fails += not ok
+    print("19. derivation ปลอมถ่างช่วงทอน : ซ่อนเป็น CHG %d · โชว์เป็นปลายทาง %d  %s"
+          % (hidden, len(shown), "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 20) PSBT ที่มีลายเซ็นของกุญแจเราติดมาแล้ว (ปลอม) = BAD PSBT ไม่เซ็นซ้อน (ผู้รีวิวภายนอก ข้อ 4)
+    ps = psbt.PSBT.parse(RAW)
+    our_pub = [k[1:] for k, _ in ps.inputs[0].items_ if k[0] == IN_DERIV][0]
+    ps.inputs[0].items_.append((bytes([psbt.IN_PARTIAL_SIG]) + our_pub, b"\x30\x06\x02\x01\x01\x02\x01\x01\x01"))
+    bad = psbt.PSBT.parse(ps.serialize())
+    res = []
+    for fn_ in (lambda: bad.describe(ROOT), lambda: bad.sign(ROOT)):
+        try:
+            fn_(); res.append("ผ่าน?!")
+        except psbt.PSBTError as e:
+            res.append(str(e).split(" -")[0])
+    ok = res == ["ALREADY SIGNED input 0", "ALREADY SIGNED input 0"]
+    # ลายเซ็นของ pubkey คนอื่น (เช่น multisig ในอนาคต) ไม่ใช่ปัญหา — ต้องยังผ่าน
+    ps = psbt.PSBT.parse(RAW)
+    ps.inputs[0].items_.append((bytes([psbt.IN_PARTIAL_SIG]) + b"\x02" + b"\x33" * 32, b"\x30\x00"))
+    other_ok = psbt.PSBT.parse(ps.serialize()).describe(ROOT) is not None
+    ok = ok and other_ok
+    fails += not ok
+    print("20. ลายเซ็นของเราติดมาแล้ว     : describe/sign = %s · ลายเซ็นคนอื่นยังผ่าน %s  %s"
+          % (res, other_ok, "ผ่าน" if ok else "ไม่ผ่าน"))
+
     print()
     if fails:
         print("ไม่ผ่าน %d ข้อ" % fails); sys.exit(1)

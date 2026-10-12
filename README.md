@@ -32,13 +32,13 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 ## Security model and known limits
 
 - **Stateless:** the app never writes the seed to flash (the only file it writes is `crash.txt` on an exception).
-- **USB data is switched off** as soon as you start entering a real seed (New / Existing seed). The computer no longer sees the device; power still flows. Power-cycle to get USB back. Test seeds leave USB on for debugging.
+- **USB data is off from power-on.** `boot.py` runs before USB starts and sets up a USB device with no interfaces, so a computer never sees a serial port/REPL; power still flows for charging. Hold **B** while powering on to get USB (and the REPL) back for development/updates — that needs physical access. If the device was started with B held, USB is switched off again as soon as you start entering a real seed.
 - **PSBT checks** (refuse = nothing is signed):
   - input amounts are trusted only from the full previous transaction (`non_witness_utxo`) whose hash matches the txid, and must match `witness_utxo` byte for byte (CVE-2020-14199)
   - fee above 10 % of total outputs, duplicate inputs, outputs above inputs, inputs from another account
   - change is hidden from the review only if it is a `p2wpkh` output of this seed on the selected account's BIP84 path, within a bounded index; anything else is shown as a destination
 - **No PIN:** whoever holds the device while a seed is loaded can use it.
-- **No secure boot:** someone with physical access can reflash the device. Check the firmware hash (below) after it has been out of your hands.
+- **No secure boot:** someone with physical access can reflash the device. The firmware hash (below) covers MicroPython and the C modules only; the app's `.py` files live on the filesystem.
 - The scanner's light cannot be switched off in software and it draws most of the power (~120 of ~133 mA).
 
 ## Firmware
@@ -61,7 +61,7 @@ SECP256K1_DIR=/path/to/secp256k1 make -C ports/rp2 BOARD=RPI_PICO2 USER_C_MODULE
 
 Flash `ports/rp2/build-RPI_PICO2/firmware.uf2` (hold BOOTSEL while plugging in, then copy the file).
 The build is reproducible on the same toolchain (Arm GNU Toolchain 15.3.Rel2): the author's build has
-SHA256 `6e5c991b64ff18ef6f0a4b834dab36fa0035ea656a0c5cfda7e48ae772b3a763` (built 2026-10-12; the date is part of the image).
+SHA256 `830427af1d8349239d72e94806109fb7c3d1ffc76b35e7fdad41d6b1abbb2a0a` (built 2026-10-13; the date is part of the image, so a rebuild on another day gives a different hash).
 
 ## Install the app
 

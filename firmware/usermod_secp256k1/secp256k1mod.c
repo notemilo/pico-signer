@@ -23,8 +23,12 @@
  *   - ไม่เรียก context_randomize = ไม่ใช้ตัวสุ่มของเครื่องเลย (ผู้ใช้ ไม่ไว้ใจ RNG ของชิป)
  *     ผลคือไม่มี blinding กัน side channel ตอนสร้าง pubkey/เซ็น
  *     แต่ก็ยังดีกว่าเดิม (โค้ด Python เดิมไม่ constant-time เลย)
- *   - callback "เรียกผิดวิธี" ของไลบรารีปกติจะ abort() = เครื่องค้าง
- *     เราแทนด้วยตัวที่จดไว้เฉย ๆ แล้วให้ฟังก์ชันคืน 0 → แปลงเป็น ValueError
+ *   - callback "เรียกผิดวิธี" (illegal) ของไลบรารีปกติจะ abort()
+ *     เราแทนด้วยตัวที่ตั้งธง แล้ว **เช็คธงหลังทุกการเรียก** → ValueError
+ *     (เอกสาร v0.8.0: หลัง illegal callback คืนกลับ ค่าที่คืนและ output เป็น undefined ห้ามใช้)
+ *   - callback "ข้อผิดพลาดภายใน" (error) ห้าม return (เอกสาร: return แล้วอะไรก็เกิดได้)
+ *     → หยุดเครื่องค้างไว้ ผู้ใช้ปิดเปิดใหม่ (ดีกว่าทำงานต่อด้วยข้อมูลที่เชื่อไม่ได้)
+ *   แก้ 13 ต.ค. 2026 ตามผู้รีวิวภายนอก ข้อ 3 (เดิมตั้งธงแต่ไม่เคยเช็ค และ error callback คืนกลับ)
  */
 
 #include <string.h>
@@ -44,6 +48,21 @@ static void on_illegal(const char *msg, void *data) {
     illegal_flag = 1;
 }
 
+static void on_error(const char *msg, void *data) {
+    (void)msg; (void)data;
+    for (;;) {
+        /* ห้าม return — หยุดตรงนี้ ปิดเปิดเครื่องใหม่ */
+    }
+}
+
+/* เรียกหลังทุกการเรียกไลบรารี — ธงตั้ง = ผลลัพธ์เชื่อไม่ได้ ห้ามใช้ */
+#define CHECK_ILLEGAL() do { \
+        if (illegal_flag) { \
+            illegal_flag = 0; \
+            mp_raise_ValueError(MP_ERROR_TEXT("secp256k1 illegal argument")); \
+        } \
+    } while (0)
+
 static secp256k1_context *get_ctx(void) {
     if (ctx == NULL) {
         size_t need = secp256k1_context_preallocated_size(SECP256K1_CONTEXT_NONE);
@@ -53,7 +72,7 @@ static secp256k1_context *get_ctx(void) {
         /* preallocated_create ทำ selftest ให้ด้วย */
         ctx = secp256k1_context_preallocated_create(ctx_buf, SECP256K1_CONTEXT_NONE);
         secp256k1_context_set_illegal_callback(ctx, on_illegal, NULL);
-        secp256k1_context_set_error_callback(ctx, on_illegal, NULL);
+        secp256k1_context_set_error_callback(ctx, on_error, NULL);
     }
     illegal_flag = 0;
     return ctx;
@@ -71,7 +90,9 @@ static const unsigned char *get_bytes(mp_obj_t o, size_t want) {
 static mp_obj_t ser_pub(secp256k1_context *c, const secp256k1_pubkey *pk) {
     unsigned char out[33];
     size_t outlen = sizeof(out);
-    if (!secp256k1_ec_pubkey_serialize(c, out, &outlen, pk, SECP256K1_EC_COMPRESSED) || outlen != 33) {
+    int ok = secp256k1_ec_pubkey_serialize(c, out, &outlen, pk, SECP256K1_EC_COMPRESSED);
+    CHECK_ILLEGAL();
+    if (!ok || outlen != 33) {
         mp_raise_ValueError(MP_ERROR_TEXT("pubkey serialize failed"));
     }
     return mp_obj_new_bytes(out, 33);
@@ -82,7 +103,9 @@ static mp_obj_t mod_privkey_to_pubkey(mp_obj_t priv_in) {
     secp256k1_context *c = get_ctx();
     const unsigned char *priv = get_bytes(priv_in, 32);
     secp256k1_pubkey pk;
-    if (!secp256k1_ec_pubkey_create(c, &pk, priv)) {
+    int ok = secp256k1_ec_pubkey_create(c, &pk, priv);
+    CHECK_ILLEGAL();
+    if (!ok) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid private key"));
     }
     return ser_pub(c, &pk);
@@ -95,8 +118,10 @@ static mp_obj_t mod_tweak_add_private(mp_obj_t priv_in, mp_obj_t tweak_in) {
     unsigned char k[32];
     memcpy(k, get_bytes(priv_in, 32), 32);
     const unsigned char *t = get_bytes(tweak_in, 32);
-    if (!secp256k1_ec_seckey_tweak_add(c, k, t)) {
+    int ok = secp256k1_ec_seckey_tweak_add(c, k, t);
+    if (illegal_flag || !ok) {
         memset(k, 0, sizeof(k));
+        CHECK_ILLEGAL();
         mp_raise_ValueError(MP_ERROR_TEXT("tweak result invalid"));
     }
     mp_obj_t r = mp_obj_new_bytes(k, 32);
@@ -111,10 +136,14 @@ static mp_obj_t mod_tweak_add_public(mp_obj_t pub_in, mp_obj_t tweak_in) {
     const unsigned char *p = get_bytes(pub_in, 33);
     const unsigned char *t = get_bytes(tweak_in, 32);
     secp256k1_pubkey pk;
-    if (!secp256k1_ec_pubkey_parse(c, &pk, p, 33)) {
+    int ok = secp256k1_ec_pubkey_parse(c, &pk, p, 33);
+    CHECK_ILLEGAL();
+    if (!ok) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid public key"));
     }
-    if (!secp256k1_ec_pubkey_tweak_add(c, &pk, t)) {
+    ok = secp256k1_ec_pubkey_tweak_add(c, &pk, t);
+    CHECK_ILLEGAL();
+    if (!ok) {
         mp_raise_ValueError(MP_ERROR_TEXT("tweak result invalid"));
     }
     return ser_pub(c, &pk);
@@ -127,12 +156,18 @@ static mp_obj_t mod_sign(mp_obj_t msg_in, mp_obj_t priv_in) {
     const unsigned char *msg = get_bytes(msg_in, 32);
     const unsigned char *priv = get_bytes(priv_in, 32);
     secp256k1_ecdsa_signature sig;
-    if (!secp256k1_ecdsa_sign(c, &sig, msg, priv, secp256k1_nonce_function_rfc6979, NULL)) {
+    int ok = secp256k1_ecdsa_sign(c, &sig, msg, priv, secp256k1_nonce_function_rfc6979, NULL);
+    CHECK_ILLEGAL();
+    if (!ok) {
         mp_raise_ValueError(MP_ERROR_TEXT("sign failed"));
     }
     unsigned char out[64];
     secp256k1_ecdsa_signature_serialize_compact(c, out, &sig);
-    return mp_obj_new_bytes(out, 64);
+    CHECK_ILLEGAL();
+    mp_obj_t r = mp_obj_new_bytes(out, 64);
+    memset(&sig, 0, sizeof(sig));
+    memset(out, 0, sizeof(out));
+    return r;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mod_sign_obj, mod_sign);
 
@@ -144,13 +179,19 @@ static mp_obj_t mod_verify(mp_obj_t msg_in, mp_obj_t sig_in, mp_obj_t pub_in) {
     const unsigned char *p = get_bytes(pub_in, 33);
     secp256k1_ecdsa_signature sig;
     secp256k1_pubkey pk;
-    if (!secp256k1_ecdsa_signature_parse_compact(c, &sig, s64)) {
+    int ok = secp256k1_ecdsa_signature_parse_compact(c, &sig, s64);
+    CHECK_ILLEGAL();
+    if (!ok) {
         return mp_const_false;
     }
-    if (!secp256k1_ec_pubkey_parse(c, &pk, p, 33)) {
+    ok = secp256k1_ec_pubkey_parse(c, &pk, p, 33);
+    CHECK_ILLEGAL();
+    if (!ok) {
         return mp_const_false;
     }
-    return mp_obj_new_bool(secp256k1_ecdsa_verify(c, &sig, msg, &pk) == 1);
+    ok = secp256k1_ecdsa_verify(c, &sig, msg, &pk);
+    CHECK_ILLEGAL();
+    return mp_obj_new_bool(ok == 1);
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mod_verify_obj, mod_verify);
 

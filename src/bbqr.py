@@ -130,6 +130,11 @@ class Decoder:
     """
 
     MAX_PART_CHARS = 4000
+    # 🔴 13 ต.ค. 2026 (รีวิวภายนอก ข้อ 6 / F-04): เดิมรับได้ 1295 เฟรม × 4000 ตัว ≈ 5 MB
+    #    เทียบ RAM ~500 KB → QR ชุดเดียวทำ MemoryError เครื่องค้างได้
+    #    เพดานรวม 64,000 ตัว base32 ≈ PSBT 40 KB (ของจริงจาก wallet ฝั่งคอม 10 input พร้อม tx เก่า ≈ 4–8 KB)
+    #    ประเมินตั้งแต่เฟรมแรก (จำนวนเฟรม × ความยาว) และนับสะสมจริงอีกชั้น
+    MAX_TOTAL_CHARS = 64000
 
     def __init__(self):
         self.reset()
@@ -139,6 +144,8 @@ class Decoder:
         self.total = 0
         self.type = None
         self.enc = None
+        self._chars = 0
+        self.too_big = False     # ปฏิเสธเพราะใหญ่เกินเพดาน — ให้หน้าจอบอกผู้ใช้ได้
 
     @property
     def have(self):
@@ -165,6 +172,10 @@ class Decoder:
             return False
         # ⚠️ ล็อก total/type/encoding ตั้งแต่เฟรมแรก — เฟรมหลังที่ไม่ตรงคือคนละชุด ทิ้ง
         #    (กันสแกนสองชุดปนกันแล้วได้ข้อมูลมั่ว ซึ่งอันตรายกว่าสแกนไม่ติด)
+        part_len = len(text) - 8
+        if self.total == 0 and tot * part_len > self.MAX_TOTAL_CHARS:
+            self.too_big = True
+            return False
         if self.total == 0:
             self.total = tot
             self.type = typ
@@ -173,6 +184,10 @@ class Decoder:
             return False
         if idx in self._parts:
             return False        # ซ้ำ — ไม่ใช่ error แต่ไม่นับเพิ่ม
+        if self._chars + part_len > self.MAX_TOTAL_CHARS:
+            self.too_big = True
+            return False
+        self._chars += part_len
         self._parts[idx] = text[8:]
         return True
 
