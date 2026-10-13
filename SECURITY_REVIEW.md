@@ -17,13 +17,13 @@ rather than in a public issue.
 ## Threat model
 
 In scope:
-1. A malicious PSBT that makes the ผู้ใช้ sign something other than what the screen shows
+1. A malicious PSBT that makes the owner sign something other than what the screen shows
    (hidden outputs, hidden change, fee tricks, wrong account, unsigned-but-looks-signed, etc.).
 2. A malicious QR (PSBT, address, SeedQR) that crashes, hangs, or corrupts device state.
 3. Key/nonce leakage through faulty or non-deterministic signing.
 4. A computer the device is plugged into while a seed is loaded.
 5. Mistakes in BIP39 / BIP32 / SeedQR / dice-to-mnemonic that would produce a different wallet
-   than the ผู้ใช้'s paper backup.
+   than the owner's paper backup.
 
 Out of scope / accepted:
 - Physical attacker with lab equipment (power analysis, glitching, decapping). There is no secure element
@@ -36,7 +36,7 @@ Out of scope / accepted:
 | File | What it does |
 |---|---|
 | `src/psbt.py` | BIP174 parse, `describe()` (what the review screen shows), `sign()` |
-| `src/ui.py` → `screen_sign`, `screen_scan` | refusal rules and what the ผู้ใช้ must confirm |
+| `src/ui.py` → `screen_sign`, `screen_scan` | refusal rules and what the owner must confirm |
 | `src/tx.py` | transaction parse/serialize, BIP143 sighash |
 | `src/bip32.py`, `src/bip39.py`, `src/hashes.py` | key derivation, PBKDF2/HMAC |
 | `src/dice.py`, `src/seedqr.py` | dice → mnemonic (1 bit per roll: odd/even), SeedQR Standard/Compact |
@@ -47,7 +47,7 @@ Out of scope / accepted:
 ### Specific questions
 
 1. **Change detection** (`PSBT._owned_keys`, `_is_change_path`, `describe`): can an output be hidden from
-   the review (`is_change=True`) while paying anywhere the ผู้ใช้'s wallet will not find?
+   the review (`is_change=True`) while paying anywhere the owner's wallet will not find?
 2. **Input amounts**: amounts come only from `non_witness_utxo` (hash-checked) and must equal
    `witness_utxo`. Any way around this, e.g. via parse quirks in `tx.Transaction.parse`?
 3. **Fee cap**: refuse if `fee > 10 %` of total outputs (Coldcard's original formula). Edge cases?
