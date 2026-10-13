@@ -3,6 +3,9 @@
 An air-gapped Bitcoin signing device built on a **Raspberry Pi Pico 2** running MicroPython.
 No radio, no stored secrets: the seed lives in RAM only and is gone when power is cut.
 
+<p align="center"><img src="docs/device.jpg" width="360" alt="Pico Signer in its case"><br>
+<sub>The device in its case (photo taken at an earlier version, v2.11.1)</sub></p>
+
 > ⚠️ **Hobby project — not audited.** Elliptic-curve math uses **libsecp256k1** (Bitcoin Core's
 > library) when the custom firmware is flashed, but BIP39, BIP32, PSBT parsing/review and the UI
 > are written from scratch in Python and have only been checked against reference implementations
@@ -17,6 +20,13 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 | Waveshare Pico-LCD-1.3 | ST7789 240×240, 4 buttons + 5-way joystick |
 | Waveshare Pico-UPS-B + 600 mAh LiPo | INA219 on I2C1 (GP6/GP7) for battery % |
 | Waveshare Barcode Scanner Module (D) | UART0 (scanner TX → GP1, RX → GP0) · **3.3 V only** |
+
+<p align="center">
+<img src="docs/parts.jpg" width="32%" alt="All parts and the case">
+<img src="docs/wiring.jpg" width="32%" alt="Scanner wired to the Pico 2">
+<img src="docs/pico2.jpg" width="32%" alt="Pico 2 under a clear cover">
+<br><sub>Left: all parts and the case · Middle: scanner wired to the Pico 2 (power, ground, UART TX/RX) · Right: Pico 2 under a clear cover</sub>
+</p>
 
 ## Features
 
