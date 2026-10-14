@@ -14,7 +14,7 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 
 ## Demo
 
-https://github.com/user-attachments/assets/928028a4-564e-44ba-8518-8448efee46fe
+https://github.com/user-attachments/assets/a9c1817c-8d00-4a1c-adfd-76cc2527b1d8
 
 Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed loaded).
 
