@@ -12,6 +12,12 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 > in the test suite. Do not trust it with funds you cannot afford to lose.
 > Outside review is welcome — see [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
 
+## Demo
+
+https://github.com/ผู้ใช้-attachments/assets/928028a4-564e-44ba-8518-8448efee46fe
+
+Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed loaded).
+
 ## Hardware
 
 | Part | Notes |
