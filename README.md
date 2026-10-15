@@ -10,7 +10,8 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 > library) when the custom firmware is flashed, but BIP39, BIP32, PSBT parsing/review and the UI
 > are written from scratch in Python and have only been checked against reference implementations
 > in the test suite. Do not trust it with funds you cannot afford to lose.
-> Outside review is welcome — see [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
+> Outside review is welcome — see [SECURITY_REVIEW.md](SECURITY_REVIEW.md). To report a vulnerability, see
+> [SECURITY.md](SECURITY.md).
 
 **Version:** see [`VERSION`](VERSION) and [`CHANGELOG.md`](CHANGELOG.md) — each version is also published under
 [Releases](https://github.com/notemilo/pico-signer/releases). The device shows its version on the boot screen and under
