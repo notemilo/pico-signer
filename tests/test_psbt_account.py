@@ -162,8 +162,16 @@ for m in d.inputs:
     for i, (k, v) in enumerate(m.items_):
         if k[0] == P.IN_BIP32_DERIVATION:
             m.items_[i] = (k, deriv_value("m/49h/0h/0h/0/0"))
-dd = P.PSBT.parse(d.serialize()).describe(root, account=0)
-check("input ประกาศเส้นทางแปลก (49h): account = ? และนับเป็นผิด account",
+# 15 ต.ค. 2026: เส้นทางที่ประกาศไม่ตรงกับ pubkey จริง = PSBT โกหก → ปฏิเสธทั้งใบ (เดิม: ผ่านแต่นับเป็นผิด account)
+try:
+    P.PSBT.parse(d.serialize()).describe(root, account=0)
+    lied = False
+except P.PSBTLie:
+    lied = True
+check("input ประกาศเส้นทาง 49h ที่ไม่ตรง pubkey จริง: ปฏิเสธเป็น PSBTLie", lied)
+# เส้นทางแปลกแต่ "จริง" (กุญแจ m/49h จริง จ่ายแบบ p2wpkh) ต้องยังผ่าน แค่นับเป็นผิด account
+dd = build("m/49h/0h/0h/0/0", "m/84h/0h/0h/1/0").describe(root, account=0)
+check("input เส้นทางแปลกแต่จริง (49h): account = ? และนับเป็นผิด account",
       dd["input_accounts"] == [None] and dd["inputs_wrong_account"] == 1)
 
 print()

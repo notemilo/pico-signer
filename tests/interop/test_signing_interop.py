@@ -156,6 +156,21 @@ if want_dest not in got_outs:
 else:
     print("  ปลายทางในธุรกรรมจริงตรงกับที่สั่ง        %s ← %d ซาโตชิ" % want_dest)
 
+# 15 ต.ค. 2026: ใบที่ตัดแล้ว (export_signed — ที่เครื่องโชว์เป็น QR จริง) ต้อง finalize ได้ txid เดียวกับใบเต็ม
+#   wallet ไม่ได้รวมกับ PSBT ใบเดิม แต่ finalize ใบที่สแกนกลับมาเลย (server.js finalizeAllInputs)
+import base64_min as _b64m   # noqa: E402
+import bbqr as _bbqr         # noqa: E402
+full_raw = p.serialize()
+trim_raw = p.export_signed()
+res_t = js("validate_psbt", psbt=_b64m.b64encode(trim_raw))
+fr_full = len(_bbqr.encode(full_raw, "P", 80))
+fr_trim = len(_bbqr.encode(trim_raw, "P", 80))
+ok_t = res_t["signaturesValid"] and res_t["txid"] == res["txid"]
+if not ok_t:
+    fails.append("PSBT ที่ตัดแล้ว bitcoinjs finalize ไม่ได้/txid ไม่ตรง")
+print("  ใบที่ตัดแล้ว: bitcoinjs ตรวจ+finalize      %s · %d → %d ไบต์ · QR MID %d → %d เฟรม"
+      % ("ผ่าน txid เดียวกัน" if ok_t else "❌ ไม่ผ่าน", len(full_raw), len(trim_raw), fr_full, fr_trim))
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── 5. เซ็นซ้ำ 3 รอบต้องได้ผลเดิม (ไม่มีความสุ่มหลุดเข้ามา) ─────")
 sigs = set()

@@ -115,17 +115,24 @@ def run():
     # ===== 2. โจมตี: แปะ derivation ปลอมบน output ของคนแปลกหน้า =====
     p2 = build(root, [(stranger_spk, 90_000)], fake_deriv_on=0,
                fake_pubkey=change.pubkey)
-    d2 = p2.describe(root)
-    if d2["outputs"][0]["is_change"]:
-        fails.append("🔴 ถูกหลอก: นับ output ของคนอื่นเป็นเงินทอน")
-    if d2["sending"] != 90_000:
-        fails.append("🔴 ถูกหลอก: ยอดจ่ายออกควรเป็น 90,000 ได้ %d" % d2["sending"])
+    # 15 ต.ค. 2026: PSBT ที่โกหกแบบนี้ต้องถูกปฏิเสธทั้งใบ (PSBTLie) — เดิมแค่ไม่นับเป็นเงินทอน
+    try:
+        d2 = p2.describe(root)
+        if d2["outputs"][0]["is_change"]:
+            fails.append("🔴 ถูกหลอก: นับ output ของคนอื่นเป็นเงินทอน")
+        fails.append("🔴 derivation ปลอมบน output คนแปลกหน้า ต้องเป็น PSBTLie")
+    except P.PSBTLie:
+        pass
 
     # ===== 3. โจมตี: path ถูก แต่ scriptPubKey เป็นของคนอื่น =====
     p3 = build(root, [(stranger_spk, 90_000)], change_index=0)
-    d3 = p3.describe(root)
-    if d3["outputs"][0]["is_change"]:
-        fails.append("🔴 ถูกหลอก: path ของเราแต่สคริปต์เป็นของคนอื่น กลับนับเป็นเงินทอน")
+    try:
+        d3 = p3.describe(root)
+        if d3["outputs"][0]["is_change"]:
+            fails.append("🔴 ถูกหลอก: path ของเราแต่สคริปต์เป็นของคนอื่น กลับนับเป็นเงินทอน")
+        fails.append("🔴 path ของเราแต่จ่ายคนอื่น ต้องเป็น PSBTLie")
+    except P.PSBTLie:
+        pass
 
     # ===== 4. โจมตี: input ที่ไม่ใช่ของเรา ต้องไม่เซ็น =====
     p4 = build(root, [(stranger_spk, 90_000)])

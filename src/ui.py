@@ -401,6 +401,12 @@ class App:
             if j == 1:
                 if self.confirm("USE SEED?", ["WROTE ALL %d" % count, "WORDS ON PAPER?", "",
                                               "LAST CHANCE"]):
+                    # 🔑 15 ต.ค. 2026 (SeedSigner SeedWordsBackupTestView): ทดสอบกระดาษก่อนใช้ — B ข้ามได้
+                    #    ตอบผิด/กดหยุด = กลับไปดูคำใหม่ ยังไม่โหลด seed
+                    if self.confirm("CHECK?", ["QUIZ EACH WORD", "AGAINST YOUR", "PAPER", "",
+                                               "B = SKIP"]):
+                        if not self.quiz_words(parts):
+                            continue
                     self.load_mnemonic(mn, is_test=False)
                     return
                 continue
@@ -408,6 +414,37 @@ class App:
             if self.confirm("DISCARD?", ["THROW AWAY", "THESE %d WORDS" % count, "",
                                          "CANNOT UNDO"]):
                 return
+
+    def quiz_words(self, parts):
+        """ทดสอบว่าคำบนกระดาษตรงกับ seed ครบทุกคำ ทีละคำตามลำดับ — คืน True ถ้าผ่านครบ
+
+        🔑 15 ต.ค. 2026 (SeedSigner SeedWordsBackupTestView): สำรองผิดคือทางเสียเงินที่ไม่มีใครช่วยได้
+           SeedSigner สุ่มลำดับคำ + สุ่มคำหลอกด้วย random — **เครื่องนี้ตั้งใจไม่มีโค้ดสุ่มเลย** จึงใช้แบบกำหนดได้:
+           ถามเรียงจากคำที่ 1 · คำหลอก = คำข้าง ๆ ในรายการ BIP39 (หน้าตาคล้าย เช่น zero/zone/zoo บังคับให้อ่านจริง)
+           ตำแหน่งคำจริง = ลำดับคำ BIP39 mod 4 (เปลี่ยนไปทุกคำ ไม่ต้องสุ่ม)
+        """
+        wl = bip39.wordlist(WL)
+        n = len(parts)
+        i = 0
+        while i < n:
+            w = parts[i]
+            idx = wl.index(w)
+            decoys = [wl[(idx + d) % 2048] for d in (-1, 1, 2)]
+            pos = idx % 4
+            opts = decoys[:pos] + [w] + decoys[pos:]
+            j = self.menu("WORD %d?" % (i + 1), opts, "A=PICK  B=STOP")
+            if j is None:
+                return False
+            if opts[j] == w:
+                i += 1
+                continue
+            self.message("WRONG", ["WORD %d IS" % (i + 1), "NOT", opts[j], "", "CHECK PAPER"],
+                         "A=RETRY B=WORDS", lcd.RED)
+            if self.wait_key(("A", "CTRL", "B")) == "B":
+                return False
+        self.message("PAPER OK", ["ALL %d WORDS" % n, "MATCH", "", "KEEP IT SAFE"], "A=NEXT", lcd.GREEN)
+        self.wait_key(("A", "CTRL"))
+        return True
 
     def show_words(self, parts):
         """โชว์คำทีละ 6 คำ ให้จดลงกระดาษ (24 คำ = 4 หน้า · 12 คำ = 2 หน้า)"""
@@ -615,12 +652,18 @@ class App:
         self.message("DERIVING", ["TAKES ~10 SEC", "", "DO NOT UNPLUG"], "")
         gc.collect()
         t0 = time.ticks_ms()
-        sd = bip39.seed(mn, passphrase)
-        self.root = bip32.HDKey.from_seed(sd)
         # 🔴 บัค H (15 ก.ย. 2026): เดิมใส่ passphrase แล้ว account กลับเป็น 0 เงียบ ๆ
         #    seed เดิม + เปลี่ยน passphrase = คง account ที่เลือกไว้ · seed ใหม่ = เริ่ม 0
         #    และหน้า READY โชว์ ACCT ทุกครั้ง ผู้ใช้เห็นเสมอว่ากำลังใช้ account ไหน
         same_seed = keep_account and mn == self.mnemonic
+        # 🔑 15 ต.ค. 2026 (SeedSigner หน้า passphrase โชว์ "FP เดิม >> FP ใหม่"): เปลี่ยน passphrase บน seed เดิม
+        #    = โชว์ทั้งสองค่า ให้เห็นว่ากระเป๋าเปลี่ยนจริง และเทียบกับที่จดไว้ได้ทั้งคู่
+        #    ใช้ root เดิมที่โหลดอยู่ ไม่ต้องคำนวณ seed ใหม่อีกรอบ (PBKDF2 ~10 วิบน Pico)
+        old_fp = None
+        if same_seed and self.root is not None and passphrase != self.passphrase:
+            old_fp = self.root.my_fingerprint().hex().upper()
+        sd = bip39.seed(mn, passphrase)
+        self.root = bip32.HDKey.from_seed(sd)
         self.mnemonic = mn
         self.passphrase = passphrase
         self.is_test = is_test
@@ -630,7 +673,7 @@ class App:
         fp = self.root.my_fingerprint().hex().upper()
         self.message("READY", [
             "FP " + fp,
-            "took %d ms" % dt,
+            ("WAS " + old_fp) if old_fp else "took %d ms" % dt,
             "",
             "TEST SEED!" if is_test else "REAL SEED",
             "WITH PASSPHRASE" if passphrase else "",
@@ -714,6 +757,32 @@ class App:
                      "A=NEXT", lcd.ORANGE)
         self.wait_key(("A", "CTRL"))
         self.show_qr_grid(m)
+        del m
+        gc.collect()
+        self.check_seedqr_paper()
+
+    def check_seedqr_paper(self):
+        """วาด SeedQR เสร็จแล้ว ให้สแกนกระดาษเทียบกับ seed ที่โหลดอยู่ทันที
+
+        🔑 15 ต.ค. 2026 (SeedSigner SeedTranscribeSeedQRConfirmScanView):
+           วาดผิดช่องเดียว Compact อาจอ่านได้เป็น "กระเป๋าคนละใบ" แบบไม่มี error (ไม่มี checksum)
+           เดิมต้องไปเมนู Load SeedQR แล้วเทียบ FP เอง → ตอนนี้เทียบชุดคำให้เลย ไม่แตะ seed ที่โหลดอยู่
+        """
+        if not self.confirm("CHECK QR?", ["SCAN THE PAPER", "YOU JUST DREW", "TO CHECK IT", "",
+                                          "B = SKIP"]):
+            return
+        mn = self._scan_seedqr()
+        if mn is None:
+            return
+        same = mn == self.mnemonic
+        del mn
+        gc.collect()
+        if same:
+            self.message("QR OK", ["PAPER MATCHES", "THIS SEED", "", "KEEP IT SAFE"], "A=OK", lcd.GREEN)
+        else:
+            self.message("QR WRONG", ["PAPER IS A", "DIFFERENT SEED", "", "FIX OR REDRAW", "DO NOT USE IT"],
+                         "A=OK", lcd.RED)
+        self.wait_key(("A", "CTRL", "B"))
 
     def show_qr_grid(self, m):
         """โชว์ QR ทีละบล็อก 5x5 ตาราง ตั้งชื่อ A1-E5 แบบเดียวกับที่วงการใช้
@@ -855,12 +924,21 @@ class App:
         # ยืนยันสิ่งที่พิมพ์ก่อนเอาไปใช้ — พิมพ์ผิดจะได้กระเป๋าคนละใบเงียบ ๆ
         self.d.clear(lcd.BLACK)
         y = self._chrome("CONFIRM", "A=USE  B=BACK")
-        self.d.text_big("PASSPHRASE:", 6, y, lcd.WHITE, 2)
+        self.d.text_big("PASSPHRASE %d:" % len(pw), 6, y, lcd.WHITE, 2)
         y += 26
         if pw:
             for i in range(0, len(pw), 14):
-                self.d.text_big(pw[i:i + 14], 6, y, lcd.YELLOW, 2)
+                seg = pw[i:i + 14]
+                self.d.text_big(seg, 6, y, lcd.YELLOW, 2)
+                # 🔑 15 ต.ค. 2026 (SeedSigner แทนช่องว่างด้วยบล็อก ▉): ช่องว่างมองไม่เห็นบนจอ
+                #    เผลอเว้นวรรคท้าย/ซ้อน = กระเป๋าคนละใบแบบไม่มี error → วาดกล่องเทาทุกช่องว่าง
+                #    ช่องละ 16 พิกเซล (ฟอนต์ 8 x scale 2) · ฟอนต์ไม่มีตัวอักษรนอก ASCII ให้ใช้แทน
+                for j in range(len(seg)):
+                    if seg[j] == " ":
+                        self.d.fill_rect(6 + j * 16 + 3, y + 4, 10, 10, lcd.GREY)
                 y += 22
+            if " " in pw:
+                self.d.text("GREY BOX = SPACE", 6, y + 2, lcd.GREY)
         else:
             self.d.text_big("(none)", 6, y, lcd.GREY, 2)
             y += 22
@@ -1025,6 +1103,14 @@ class App:
             else:
                 ps = P.PSBT.from_base64(src)
             info = ps.describe(self.root, account=self.account)
+        except P.PSBTLie:
+            # 🔴 15 ต.ค. 2026 (แนวคิดจาก SeedSigner): PSBT โกหกเรื่องกุญแจของ seed นี้ = ไม่ใช่ไฟล์เสีย
+            #    บอกผู้ใช้ตรง ๆ ว่าฝั่งที่สร้าง PSBT (คอม/wallet) อาจโดนเจาะ — ไม่ใช่แค่ BAD PSBT
+            self.message("PSBT LIES", ["KEY INFO FOR", "THIS SEED IS", "FAKE", "",
+                                       "WALLET OR PC", "MAY BE HACKED", "", "NOT SIGNED"],
+                         "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+            return
         except Exception as e:
             self.message("BAD PSBT", [str(type(e).__name__)[:14], str(e)[:14]], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
@@ -1042,6 +1128,14 @@ class App:
             return
         if info["fee"] < 0:
             self.message("REFUSED", ["OUTPUTS EXCEED", "INPUTS"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+            return
+        # 🔑 15 ต.ค. 2026 (SeedSigner PSBTSeedCannotSignView): seed นี้เซ็น input ไหนไม่ได้เลย
+        #    = เลือก seed/passphrase ผิด → บอกตั้งแต่ตอนนี้ ไม่ต้องให้กดผ่านหน้ารีวิวแล้วค่อยเจอ NOT SIGNED
+        #    (อยู่หลังด่าน "ไม่มี tx เก่า" เพราะไม่รู้ script ของ input ก็นับไม่ได้ว่าเซ็นได้ไหม)
+        if not info["inputs_signable"]:
+            self.message("NOT YOURS", ["NO INPUT CAN", "BE SIGNED BY", "THIS SEED", "",
+                                       "WRONG SEED OR", "PASSPHRASE?"], "A=BACK", lcd.ORANGE)
             self.wait_key(("A", "CTRL"))
             return
         # 🔴 12 ต.ค. 2026: ค่าธรรมเนียมเกินเพดาน (ดู psbt.MAX_FEE_PCT) = ไม่เซ็น ไม่ใช่แค่เตือน
@@ -1076,7 +1170,9 @@ class App:
             " %s" % fmt_btc(send),
             "FEE  %s" % fmt_sat(fee),
             "CHG  %s" % fmt_sat(info["change"]),
-            "IN   %d" % info["inputs"],
+            # 🔑 15 ต.ค. 2026: มี input ของคนอื่นปน (payjoin/coinjoin) ต้องเห็น — SEND อาจรวมเงินที่คนอื่นจ่าย
+            ("IN   %d" % info["inputs"]) if info["inputs_mine"] == info["inputs"]
+            else ("IN %d MINE %d" % (info["inputs"], info["inputs_mine"])),
             "ACCT %d" % self.account,
         ]
         if pct >= 10:
@@ -1158,7 +1254,9 @@ class App:
         self.message("SIGNED", ["%d input(s)" % n, "took %d ms" % dt, "",
                                 "SHOW QR NEXT"], "A=SHOW QR")
         self.wait_key(("A", "CTRL"))
-        out = ps.serialize()
+        # 🔑 15 ต.ค. 2026: ส่งกลับแบบตัด tx เก่า/derivation ออก (psbt.export_signed) — เฟรม QR น้อยลงราวครึ่ง
+        #    เทสไขว้: bitcoinjs (ตัวเดียวกับ wallet) finalize ใบที่ตัดแล้วได้ txid เดียวกับใบเต็ม
+        out = ps.export_signed()
         del ps
         gc.collect()
         self.show_bbqr(out, "P", "SIGNED PSBT")
@@ -1305,31 +1403,20 @@ class App:
         self.wait_key(("A", "CTRL", "B"))
 
     # ── โหลด seed จาก CompactSeedQR ─────────────────────────────────
-    def screen_load_seedqr(self):
-        """สแกน CompactSeedQR (กระดาษที่วาดจากเมนู Seed QR) แล้วโหลดเป็น seed
+    def _scan_seedqr(self):
+        """เปิดสแกนเนอร์ อ่าน SeedQR (Compact/Standard) จนได้ชุดคำตรงกันครบ 3 ครั้ง — คืนชุดคำ หรือ None ถ้ายกเลิก/ผิดพลาด
 
-        🔴 Compact ไม่มี checksum -> ไบต์เพี้ยน = กระเป๋าคนละใบ ไม่มี error
-           กัน 2 ชั้น: อ่านได้ไบต์ตรงกันติดกัน 3 ครั้ง (seedqr.Collector)
-           แล้วบังคับให้ผู้ใช้ตอบว่า fingerprint ตรงกับที่จดบนกระดาษ
-           ตอบไม่ตรง = ล้าง seed ทิ้งทันที
-        🔴 QR ไม่มี passphrase อยู่ในนั้น — ถ้าใช้ต้องใส่เองทีหลังที่เมนู Passphrase
+        แยกออกมา 15 ต.ค. 2026 ให้ใช้ร่วม Load SeedQR และ "ตรวจกระดาษ" หลังวาด SeedQR
         """
         import scanner as SC
         import seedqr
-
-        if self.mnemonic and not self.confirm("REPLACE?", ["A SEED IS", "LOADED NOW", "",
-                                                           "REPLACE IT?"]):
-            return
-        if not self.confirm("LOAD QR", ["UNPLUG USB", "USE BATTERY", "",
-                                            "NO PASSPHRASE", "IN THE QR", "", "GO ON?"]):
-            return
 
         try:
             sc = SC.Scanner()
         except Exception as e:
             self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
-            return
+            return None
 
         col = seedqr.Collector()
         mn = None
@@ -1351,17 +1438,37 @@ class App:
                     self.message("SCAN SEED", body, "B=CANCEL", lcd.WHITE)
                 if self.k.any_pressed():
                     if self.wait_key() in ("B", "LEFT"):
-                        return
+                        return None
                 if time.ticks_diff(time.ticks_ms(), t0) > 120000:
                     self.message("TIMEOUT", ["NO SEEDQR", "READ"], "A=BACK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
-                    return
+                    return None
                 time.sleep_ms(30)
         finally:
             sc.deinit()
             del sc
             gc.collect()
+        return mn
 
+    def screen_load_seedqr(self):
+        """สแกน CompactSeedQR (กระดาษที่วาดจากเมนู Seed QR) แล้วโหลดเป็น seed
+
+        🔴 Compact ไม่มี checksum -> ไบต์เพี้ยน = กระเป๋าคนละใบ ไม่มี error
+           กัน 2 ชั้น: อ่านได้ไบต์ตรงกันติดกัน 3 ครั้ง (seedqr.Collector)
+           แล้วบังคับให้ผู้ใช้ตอบว่า fingerprint ตรงกับที่จดบนกระดาษ
+           ตอบไม่ตรง = ล้าง seed ทิ้งทันที
+        🔴 QR ไม่มี passphrase อยู่ในนั้น — ถ้าใช้ต้องใส่เองทีหลังที่เมนู Passphrase
+        """
+        if self.mnemonic and not self.confirm("REPLACE?", ["A SEED IS", "LOADED NOW", "",
+                                                           "REPLACE IT?"]):
+            return
+        if not self.confirm("LOAD QR", ["UNPLUG USB", "USE BATTERY", "",
+                                            "NO PASSPHRASE", "IN THE QR", "", "GO ON?"]):
+            return
+
+        mn = self._scan_seedqr()
+        if mn is None:
+            return
         gc.collect()
 
         # ถ้าเป็น seed ทดสอบสาธารณะในรายการ ให้ติดป้าย TEST เหมือนเมนู Test seed

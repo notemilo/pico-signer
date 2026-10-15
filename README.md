@@ -36,14 +36,14 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 
 ## Features
 
-- **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator
+- **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator · optional word-by-word quiz against the paper backup before the seed is used
 - Load seed by typing words or scanning **SeedQR** (Standard and Compact)
-- Optional BIP39 passphrase · BIP84 accounts (`m/84h/0h/<n>h`)
+- Optional BIP39 passphrase (spaces drawn as grey boxes; fingerprint shown before → after) · BIP84 accounts (`m/84h/0h/<n>h`)
 - **Export xpub** as BBQr (Coldcard Generic JSON)
-- **Sign PSBT** scanned as BBQr, with a review screen for every output · signed PSBT shown back as BBQr
+- **Sign PSBT** scanned as BBQr (base32, hex or zlib-compressed `Z`), with a review screen for every output · signed PSBT shown back as BBQr, trimmed to the unsigned tx, witness UTXOs and signatures
 - **Verify receive address** — checks that an address shown by your online wallet really belongs to this seed
 - Deterministic ECDSA nonces (RFC6979) and low-S signatures · every signature is verified before it leaves the device
-- Show SeedQR backup on screen (for copying by hand)
+- Show SeedQR backup on screen (for copying by hand), then scan the drawn paper to check it matches the loaded seed
 
 ## Security model and known limits
 
@@ -52,6 +52,8 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 - **PSBT checks** (refuse = nothing is signed):
   - input amounts are trusted only from the full previous transaction (`non_witness_utxo`) whose hash matches the txid, and must match `witness_utxo` byte for byte (CVE-2020-14199)
   - fee above 10 % of total outputs, duplicate inputs, outputs above inputs, inputs from another account
+  - any key-origin claim about this seed that proves false: a derivation with this seed's fingerprint whose key does not derive, an output that claims this seed but pays elsewhere, or an output that pays this seed while naming another fingerprint (shown as `PSBT LIES`)
+  - more than one BIP32 derivation in a single input or output (single-sig only), or a sighash type other than `SIGHASH_ALL`
   - change is hidden from the review only if it is a `p2wpkh` output of this seed on the selected account's BIP84 path, within a bounded index; anything else is shown as a destination
 - **No PIN:** whoever holds the device while a seed is loaded can use it.
 - **No secure boot:** someone with physical access can reflash the device. The firmware hash (below) covers MicroPython and the C modules only; the app's `.py` files live on the filesystem.

@@ -179,6 +179,7 @@ keys += ["A",           # หน้า ROLLED (12 คำไม่มีหน้
          "A",           # show_words
          "DOWN", "A",   # SEED READY: USE SEED
          "A",           # USE SEED? ยืนยัน
+         "B",           # CHECK? (ทดสอบกระดาษ) — ข้าม · ทดสอบจริงอยู่หัวข้อ 16
          "A"]           # READY (FP)
 left = drive(app.run, keys)
 ent = int("".join(map(str, bits)), 2).to_bytes(16, "big")
@@ -193,7 +194,7 @@ check("account เริ่มที่ 0 และไม่ถามหลั�
 print("── 1b. New seed 24 → ทอยคำสุดท้าย 111 = ลำดับที่ 8 ตามใบกระดาษ")
 bits24 = [rng.randint(0, 1) for _ in range(253)] + [1, 1, 1]
 app = new_app()
-keys = ["A", "A"] + ["A" if b else "B" for b in bits24] + ["A", "A", "A", "DOWN", "A", "A", "A"]
+keys = ["A", "A"] + ["A" if b else "B" for b in bits24] + ["A", "A", "A", "DOWN", "A", "A", "B", "A"]
 left = drive(app.run, keys)
 first23w = app.mnemonic.split()[:23] if app.mnemonic else []
 c8 = bip39.last_word_candidates(" ".join(first23w)) if first23w else []
@@ -462,6 +463,93 @@ try:
 finally:
     ui.usb_is_off = real_is_off
 check("บนแมค usb_is_off คืน False ไม่พัง", ui.usb_is_off() is False)
+
+# ═══ 16. 15 ต.ค. 2026 — สิ่งที่ยืมแนวคิดจาก SeedSigner ═══
+print("── 16. SeedQR ตรวจกระดาษ · passphrase ช่องว่าง/FP เดิม · PSBT LIES · NOT YOURS")
+_keys_qr = ["A",    # TEST SEED ยืนยัน
+            "A",    # เมนู SEED QR: Compact
+            "A",    # หน้า SEED QR (วิธีวาด)
+            "B"]    # ออกจากตาราง
+# ⚠️ seed ทดสอบ abandon...art มี entropy เป็นศูนย์ล้วน — ตัวอ่าน Compact ปฏิเสธเฟรมไบต์ซ้ำทั้งก้อน (กันอ่านขยะ)
+#    จึงใช้ seed "void come effort…" (เวกเตอร์ทางการ) เป็นตัวที่โหลด · กระดาษผิด = Standard ของ abandon…art
+app = new_app()
+drive(lambda: app.load_mnemonic(void[1], True), ["A"])
+SCAN_FRAMES[:] = [frame] * 3
+left = drive(app.screen_seedqr, _keys_qr + ["A", "A"])     # CHECK QR? ใช่ · QR OK
+check("วาดเสร็จ → สแกนกระดาษที่ตรง = QR OK · seed เดิมยังโหลดอยู่",
+      left == 0 and seen("CHECK QR?") and seen("PAPER MATCHES") and app.mnemonic == void[1])
+SCAN_FRAMES[:] = [_sq.mnemonic_to_standard_digits(v24, WL_PATH).encode()] * 3
+left = drive(app.screen_seedqr, _keys_qr + ["A", "A"])
+check("สแกนกระดาษ seed อื่น = QR WRONG · seed ที่โหลดไม่ถูกแตะ",
+      left == 0 and seen("DIFFERENT SEED") and not seen("PAPER MATCHES") and app.mnemonic == void[1])
+SCAN_FRAMES[:] = []
+left = drive(app.screen_seedqr, _keys_qr + ["B"])
+check("กด B ข้ามการตรวจได้", left == 0 and seen("CHECK QR?") and not seen("SCAN SEED"))
+
+app = new_app()
+drive(lambda: app.load_mnemonic(v24, True), ["A"])
+fp0 = app.root.my_fingerprint().hex().upper()
+app.screen_passphrase = lambda current="": "a b "
+left = drive(app.screen_set_passphrase, ["A", "A"])         # CONFIRM · READY
+fp1 = app.root.my_fingerprint().hex().upper()
+check("passphrase มีช่องว่าง: บอกความยาว + คำอธิบายกล่องเทา · READY โชว์ FP เดิม (WAS)",
+      left == 0 and seen("PASSPHRASE 4:") and seen("GREY BOX = SPACE")
+      and seen("FP " + fp1) and seen("WAS " + fp0) and fp0 != fp1)
+app.screen_passphrase = lambda current="": "a b "
+drive(app.screen_set_passphrase, ["A", "A"])
+check("ใส่ passphrase เดิมซ้ำ = ไม่โชว์ WAS (กระเป๋าไม่เปลี่ยน)", not seen("WAS "))
+
+import base64 as _b64
+import psbt as _P
+_raw = _b64.b64decode(open("../test.psbt").read().strip())
+_ps = _P.PSBT.parse(_raw)
+for _m in _ps.outputs:
+    for _i, (_k, _v) in enumerate(_m.items_):
+        if _k[0] == _P.OUT_BIP32_DERIVATION:
+            _m.items_[_i] = (bytes([_k[0]]) + b"\x02" + b"\x55" * 32, _v)     # pubkey ปลอม + fingerprint เรา
+app = new_app()
+drive(lambda: app.load_mnemonic(v24, True), ["A"])
+SCAN_TEXT[:] = [_b64.b64encode(_ps.serialize()).decode()]
+left = drive(app.screen_scan, ["A"] * 4)
+check("PSBT โกหกเรื่องกุญแจ → จอ PSBT LIES · ไม่ถึงหน้า REVIEW",
+      seen("PSBT LIES") and seen("MAY BE HACKED") and not seen("REVIEW"))
+
+app = new_app()
+drive(lambda: app.load_mnemonic(devseed.get("vector-alt")[0], True), ["A"])
+SCAN_TEXT[:] = [open("../test.psbt").read().strip()]
+left = drive(app.screen_scan, ["A"] * 4)
+check("seed ผิด → NOT YOURS ก่อนหน้ารีวิว (ไม่ต้องกดผ่านรีวิว)",
+      seen("NOT YOURS") and seen("WRONG SEED OR") and not seen("REVIEW"))
+
+app = new_app()
+drive(lambda: app.load_mnemonic(v24, True), ["A"])
+SCAN_TEXT[:] = [open("../test.psbt").read().strip()]
+drive(app.screen_scan, ["A"])
+check("PSBT ปกติ (input ของเราทั้งหมด) หน้า REVIEW ขึ้น 'IN   1' ไม่มีคำว่า MINE",
+      seen("REVIEW") and seen("IN   1") and not seen("MINE"))
+
+# ทดสอบกระดาษหลังสร้าง seed (ไม่มีตัวสุ่ม: คำหลอก = คำข้าง ๆ · ตำแหน่งคำจริง = ลำดับ BIP39 mod 4)
+_q = void[1].split()
+def _ans(w):
+    return ["DOWN"] * (WORDS.index(w) % 4) + ["A"]
+app = new_app()
+keys = []
+for w in _q:
+    keys += _ans(w)
+keys += ["A"]                                               # PAPER OK
+res = []
+left = drive(lambda: res.append(app.quiz_words(_q)), keys)
+check("ตอบถูกครบ 24 คำ = PAPER OK คืน True", left == 0 and res == [True] and seen("ALL 24 WORDS"))
+check("คำหลอกเป็นคำข้าง ๆ (หน้าตาคล้าย) ไม่ใช่สุ่ม",
+      seen(WORDS[(WORDS.index(_q[0]) + 1) % 2048]) and seen(WORDS[(WORDS.index(_q[0]) - 1) % 2048]))
+wrong_pos = (WORDS.index(_q[0]) % 4 + 1) % 4
+res = []
+left = drive(lambda: res.append(app.quiz_words(_q)), ["DOWN"] * wrong_pos + ["A", "B"])
+check("ตอบผิดคำแรก แล้วกด B = WRONG · คืน False (ยังไม่โหลด seed)",
+      left == 0 and res == [False] and seen("WORD 1 IS") and seen("CHECK PAPER"))
+res = []
+left = drive(lambda: res.append(app.quiz_words(_q)), _ans(_q[0]) + ["B"])
+check("กด B กลางทาง = หยุด คืน False", left == 0 and res == [False])
 
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:

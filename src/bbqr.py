@@ -2,7 +2,7 @@
 #
 # รูปแบบ 1 เฟรม:  B$ <enc> <type> <total> <index> <payload>
 #                  0-1   2      3      4-5     6-7      8...
-#   enc   '2' = base32 (ที่เราใช้) · 'H' = hex · 'Z' = zlib+base32 (ไม่รองรับ)
+#   enc   '2' = base32 (ที่เราใช้ตอนส่งออก) · 'H' = hex · 'Z' = zlib(raw, wbits 10)+base32 (อ่านได้ 15 ต.ค. 2026)
 #   type  'P' = PSBT · 'T' = ธุรกรรมที่ finalize แล้ว · 'J' = JSON · 'C' = CBOR · 'U' = ข้อความ
 #   total/index = เลขฐาน 36 สองหลัก ตัวพิมพ์ใหญ่ (00-ZZ = สูงสุด 1295 เฟรม)
 #
@@ -119,6 +119,34 @@ def encode(data, type_="P", max_chunk=600):
     return parts
 
 
+MAX_INFLATED = 48000       # ไบต์หลังคลาย 'Z' — เพดานแยกจากเพดานตัวอักษร กัน zip bomb (ข้อมูลบีบได้ ~1000 เท่า)
+
+
+def inflate_raw(data, limit=MAX_INFLATED):
+    """คลาย deflate แบบ raw (wbits 10 ตามสเปก BBQr) — คืน bytes หรือ None ถ้าเสีย/ใหญ่เกิน limit
+
+    🔑 15 ต.ค. 2026 (SeedSigner อ่าน BBQr 'Z' ได้ · decode_qr.py BBQRPsbtQrDecoder):
+       บนเครื่องใช้โมดูล deflate ของ MicroPython (rp2 เปิดตัวคลายไว้แล้ว · ตัวบีบปิด)
+       บนแมคใช้ zlib — ทั้งคู่อ่านเกิน limit 1 ไบต์เพื่อรู้ว่าใหญ่เกิน โดยไม่คลายทั้งก้อน
+    """
+    try:
+        import deflate
+        import io
+        try:
+            out = deflate.DeflateIO(io.BytesIO(data), deflate.RAW, 10).read(limit + 1)
+        except Exception:
+            return None
+    except ImportError:
+        import zlib
+        try:
+            out = zlib.decompressobj(-10).decompress(data, limit + 1)
+        except Exception:
+            return None
+    if out is None or len(out) > limit:
+        return None
+    return bytes(out)
+
+
 class Decoder:
     """สะสมเฟรมที่สแกนได้ทีละใบ — ใช้กับสแกนเนอร์ที่ยิงมาเรื่อย ๆ
 
@@ -200,7 +228,10 @@ class Decoder:
         elif self.enc == "H":
             data = _hex_decode(payload)
         else:
-            return None          # 'Z' (zlib) ยังไม่รองรับ — Coldcard/wallet ไม่ได้ใช้
+            # 'Z' = base32 ของ deflate แบบ raw — กระเป๋าอื่น (Sparrow/Coldcard) ใช้บ่อย ตัวอย่างในเทสของ SeedSigner เป็น Z เกือบหมด
+            data = b32_decode(payload)
+            if data is not None:
+                data = inflate_raw(data)
         if data is None:
             return None
         return (data, self.type)

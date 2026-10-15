@@ -46,12 +46,12 @@ Out of scope / accepted:
 
 ### Specific questions
 
-1. **Change detection** (`PSBT._owned_keys`, `_is_change_path`, `describe`): can an output be hidden from
+1. **Change detection** (`PSBT._check_claims`, `_owned_keys`, `_is_change_path`, `describe`): can an output be hidden from
    the review (`is_change=True`) while paying anywhere the owner's wallet will not find?
 2. **Input amounts**: amounts come only from `non_witness_utxo` (hash-checked) and must equal
    `witness_utxo`. Any way around this, e.g. via parse quirks in `tx.Transaction.parse`?
 3. **Fee cap**: refuse if `fee > 10 %` of total outputs (Coldcard's original formula). Edge cases?
-4. **Sighash**: the device always signs `SIGHASH_ALL` and ignores the PSBT's sighash field. Is that enough?
+4. **Sighash**: the device signs only `SIGHASH_ALL`; a PSBT that sets any other (or malformed) sighash type is refused (`PSBT._check_sighash`). Any case this misses?
 5. **Parsing**: `tx.Transaction.parse` does little bounds checking and relies on Python slicing. Can a
    truncated/odd transaction make `describe()` and `sign()` see different data than a node would?
 6. **Dice entropy**: 1 bit per roll from parity. Last word is chosen from the 2^k checksum-valid
@@ -75,6 +75,21 @@ Thanks to the reviewers. Fixed, each with a regression test:
 - Strict transaction parsing (bounds, canonical varints, no trailing bytes, exact round-trip) — `test_tx_strict.py`.
 - BIP39 rejects non-ASCII mnemonic/passphrase (no NFKD available in MicroPython).
 - BBQr total size cap (~39 KB) and out-of-memory handling.
+
+## Changed after studying SeedSigner (2026-10-15)
+
+Ideas taken from SeedSigner's `psbt_parser.py` and embit's `sign_with` (both MIT), rewritten for this code base:
+
+- A PSBT that makes a provably false claim about this seed's keys is refused outright (`PSBTLie`) instead of
+  the claim being skipped silently (`test_psbt_attacks.py` #21-24).
+- One BIP32 derivation per input/output; non-`SIGHASH_ALL` refused (#19, #25).
+- "This seed can sign nothing here" is reported before the review screens (#26).
+- Per-call cache of intermediate derivation nodes, cleared when the call returns (#27).
+- Signed PSBT is exported without non-witness UTXOs, derivations or global xpubs (#28); witness UTXOs are kept
+  because the watch-only wallet finalizes this copy on its own (`tests/interop/test_signing_interop.py`).
+- BBQr `Z` (raw deflate, wbits 10) is accepted, capped at 48,000 bytes after inflation (`tests/test_bbqr_z.py`).
+- Backup quiz after creating a seed and a scan-to-check step after drawing a SeedQR. The quiz uses no randomness:
+  decoys are the neighbouring BIP39 words, the answer position is the word index mod 4.
 
 ## Known limitations (no need to report)
 

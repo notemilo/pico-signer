@@ -40,7 +40,7 @@ OUT_BIP32_DERIVATION = 0x02
 #             (ค) มีงบรวมทั้ง PSBT — เกินแล้วปฏิเสธทั้งใบพร้อมบอกเหตุผล ดีกว่าค้างเงียบ
 #    เส้นทางจริง: m/84h/0h/0h/1/5 = 5 ชั้น · multisig m/48h/0h/0h/2h/0/5 = 6 ชั้น
 MAX_DERIV_DEPTH = 8        # ชั้น
-MAX_DERIV_PER_MAP = 4      # รายการที่อ้าง fingerprint เราต่อ input/output
+MAX_DERIV_PER_MAP = 4      # รายการที่อ้าง fingerprint เราต่อ input/output (15 ต.ค. 2026: _check_claims ปฏิเสธช่องที่มีเกิน 1 ไปก่อนแล้ว · คงไว้เป็นด่านสำรอง)
 MAX_DERIV_STEPS = 1200     # ชั้นรวมทั้ง PSBT (~ 100 input x 5 ชั้น ไล่ทั้งตอนหาช่วงทอน + output · ขยายจาก 600 เมื่อ 12 ต.ค. 2026)
 
 # 🔴 เงินทอนต้องอยู่บนเส้นทางที่ "เครื่องนี้" ใช้จริงเท่านั้น (แก้ 11 ก.ย. 2026)
@@ -101,6 +101,23 @@ def fee_over_cap(fee, total_out):
 
 class PSBTError(Exception):
     pass
+
+
+class PSBTLie(PSBTError):
+    """PSBT อ้างข้อมูลกุญแจของ seed นี้แล้ว "พิสูจน์ได้ว่าเท็จ" — ไม่ใช่ไฟล์เสีย แต่เป็นการโกหก
+
+    🔴 15 ต.ค. 2026 (แนวคิดจาก SeedSigner psbt_parser.py · PSBT[Input|Output]OwnershipClaimError
+       / PSBTOutputOwnershipContradictionError):
+       เดิมเจอรายการที่อ้าง fingerprint เราแต่ derive แล้วไม่ตรง เรา "ข้ามเงียบ ๆ"
+       ไม่เสียเงิน (output ไปโผล่เป็นปลายทาง) แต่ผู้ใช้ไม่มีทางรู้ว่าคอม/กระเป๋าฝั่งออนไลน์กำลังโกหก
+       ตอนนี้ปฏิเสธทั้งใบ + จอบอกตรง ๆ ว่าอาจโดนเจาะ
+       และปิดทั้งตระกูลช่อง "แอบรายการปลอมไว้ข้างรายการจริง" (ช่องที่ผู้รีวิวภายนอกเจอ 12 ต.ค.) ตั้งแต่ทางเข้า
+    """
+    pass
+
+
+ZERO_FP = b"\x00\x00\x00\x00"    # กระเป๋าบางตัวใส่ fingerprint เป็น 0 เมื่อไม่รู้ = "ไม่ระบุ" ไม่ใช่ "ของคนอื่น"
+DCACHE_MAX = 32                  # เก็บ node ระดับกลาง (ไม่ใช่ปลายทาง) ที่ derive แล้ว ต่อการเรียก 1 ครั้ง
 
 
 class KVMap:
@@ -217,6 +234,7 @@ def path_str(path):
 class PSBT:
     def __init__(self):
         self._deriv_steps = 0
+        self._dcache = {}       # path ระดับกลาง (tuple) -> node · ล้างทุกครั้งที่เริ่ม/จบ describe() และ sign()
         self._prev_cache = {}   # n -> (value, spk) ที่ตรวจกับ tx เก่าแล้ว
         self.tx = None
         self.g = KVMap()     # global map ดิบ
@@ -280,6 +298,39 @@ class PSBT:
 
     def to_base64(self):
         return b64.b64encode(self.serialize())
+
+    def export_signed(self):
+        """PSBT ที่เซ็นแล้วแบบตัดของที่ฝั่งรับไม่ต้องใช้ — ไว้ทำ QR ส่งกลับ (เฟรมน้อยลง สแกนเร็วขึ้น)
+
+        🔑 15 ต.ค. 2026 (SeedSigner `PSBTParser.trim()` โชว์เฉพาะลายเซ็นก่อนทำ QR):
+           ก้อนใหญ่สุดใน PSBT คือ tx เก่าทั้งใบ (non-witness utxo) ที่เราใช้ "ตรวจ" ยอด — ตรวจเสร็จแล้วไม่ต้องส่งกลับ
+           ตัด: non-witness utxo (เฉพาะ input ที่มี witness utxo) · BIP32 derivation ทั้ง input/output · global xpub
+           เก็บ: unsigned tx · witness utxo · ลายเซ็น · sighash · script · คีย์ที่ไม่รู้จัก
+        ⚠️ ต่างจาก SeedSigner ที่ตัดเหลือแค่ลายเซ็น: wallet เอา PSBT ใบนี้ไป finalize เองโดยไม่รวมกับใบเดิม
+           (server.js finalizeAllInputs) และ bitcoinjs ต้องมี witness utxo → จึงต้องเก็บไว้
+           (เทสไขว้ test_signing_interop ข้อ 4: bitcoinjs finalize ใบที่ตัดแล้วได้ txid เดียวกับใบเต็ม)
+        """
+        out = MAGIC
+        g = KVMap()
+        for k, v in self.g.items():
+            if k[0] != GLOBAL_XPUB:
+                g.put(k, v)
+        out += _ser_map(g)
+        for m in self.inputs:
+            has_wu = m.get(bytes([IN_WITNESS_UTXO])) is not None
+            t = KVMap()
+            for k, v in m.items():
+                if k[0] == IN_BIP32_DERIVATION or (k[0] == IN_NON_WITNESS_UTXO and has_wu):
+                    continue
+                t.put(k, v)
+            out += _ser_map(t)
+        for m in self.outputs:
+            t = KVMap()
+            for k, v in m.items():
+                if k[0] != OUT_BIP32_DERIVATION:
+                    t.put(k, v)
+            out += _ser_map(t)
+        return out
 
     # ---------- ดึงข้อมูลที่ใช้ตัดสินใจ ----------
 
@@ -352,6 +403,90 @@ class PSBT:
 
     # ---------- ตรวจความเป็นเจ้าของ (ด่านความปลอดภัยหลัก) ----------
 
+    def _derive(self, root, path):
+        """derive ตาม path จาก root — คืน node หรือ None ถ้าลึกเกินจริง / derive ไม่ได้
+
+        นับงบ MAX_DERIV_STEPS เฉพาะชั้นที่ derive จริง
+        🔑 15 ต.ค. 2026 (แนวคิดจาก SeedSigner `_derive_with_cache_via_indices`):
+           ทุก path ในกระเป๋าเดียวกันขึ้นต้นเหมือนกัน (m/84h/0h/0h/...) และเราไล่ซ้ำหลายรอบ
+           (ตรวจคำอ้าง → หาช่วงทอน → ดู output) จึงเก็บ node ระดับกลางไว้ใช้ซ้ำ
+           key = path เต็มจาก root เดียวกัน (ไม่ใช้ fingerprint เป็น key — คนร้ายบังคับให้ 4 ไบต์ชนได้)
+           ไม่เก็บ node ปลายทาง (มีได้หลายร้อยตัว กินแรม) · เพดาน DCACHE_MAX ตัว
+        """
+        if len(path) > MAX_DERIV_DEPTH:
+            return None
+        node = root
+        start = 0
+        for i in range(len(path) - 1, 0, -1):        # หา prefix ที่ยาวสุดที่มีในแคช
+            c = self._dcache.get(tuple(path[:i]))
+            if c is not None:
+                node, start = c, i
+                break
+        try:
+            for i in range(start, len(path)):
+                self._deriv_steps += 1
+                if self._deriv_steps > MAX_DERIV_STEPS:
+                    raise PSBTError("PSBT TOO BIG (over %d key steps)" % MAX_DERIV_STEPS)
+                node = node.derive_child(path[i])
+                if i < len(path) - 1 and len(self._dcache) < DCACHE_MAX:
+                    self._dcache[tuple(path[:i + 1])] = node
+        except PSBTError:
+            raise
+        except Exception:
+            return None
+        return node
+
+    def _check_claims(self, root, fp_root):
+        """ตรวจทุกรายการ derivation ก่อนเชื่ออะไรใน PSBT — โกหก = ปฏิเสธทั้งใบ (PSBTLie)
+
+        🔴 15 ต.ค. 2026 (แนวคิดจาก SeedSigner `_verify_claimed_derivation_paths` + ตาราง 2x2 ใน `_parse_outputs`)
+        1. ช่องเดียวมี derivation เกิน 1 รายการ = ปฏิเสธ (PSBTError)
+           เครื่องนี้ single-sig p2wpkh อย่างเดียว · wallet ใส่ช่องละ 1 รายการ
+           (SeedSigner: PSBTSurplusDerivationPathsError) — ช่องที่ผู้รีวิวเจอ 12 ต.ค. อาศัยรายการที่ 2 พอดี
+        2. อ้าง fingerprint เรา แต่ derive แล้ว pubkey ไม่ตรง (หรือ path ลึกผิดปกติ) = โกหก
+           (เดิม: ข้ามเงียบ ๆ)
+        3. output: อ้าง fingerprint เรา pubkey จริง แต่ scriptPubKey ไม่ได้จ่ายเข้ากุญแจนั้น = โกหก
+           ("บอกว่าเป็นของเรา แต่เงินไปที่อื่น")
+        4. output: อ้าง fingerprint คนอื่น แต่ path นั้น derive จาก seed เราได้ pubkey นั้นพอดี = โกหก
+           ("จ่ายเข้าเรา แต่บอกว่าเป็นของคนอื่น") · fingerprint 0000 = "ไม่ระบุ" ไม่นับว่าโกหก
+        ดู output ก่อน input — output โกหกน่าจะเป็นการโจมตี input โกหกแค่ทำให้เซ็นไม่ได้
+        ⚠️ ข้อแลก (SeedSigner ยอมแบบเดียวกัน): fingerprint 4 ไบต์ชนกันได้ ~1 ใน 4 พันล้าน
+           ถ้าคนอื่นในธุรกรรมเดียวกันบังเอิญมี fingerprint ตรงเรา จะถูกปฏิเสธเหมือนโกหก
+        """
+        import address as addr
+        for kind, maps, prefix in (("OUT", self.outputs, OUT_BIP32_DERIVATION),
+                                   ("IN", self.inputs, IN_BIP32_DERIVATION)):
+            for n, m in enumerate(maps):
+                ders = self.derivations(m, prefix)
+                if len(ders) > 1:
+                    raise PSBTError("%s %d HAS %d KEY PATHS - single-sig allows 1"
+                                    % (kind, n, len(ders)))
+                for pub, (fp, path) in ders.items():
+                    if fp == fp_root:
+                        node = self._derive(root, path)
+                        if node is None or node.pubkey != pub:
+                            raise PSBTLie("%s %d FAKE KEY PATH for this seed" % (kind, n))
+                        if kind == "OUT":
+                            spk = self.tx.vout[n].script_pubkey
+                            if spk != addr.p2wpkh_script(pub) and spk != addr.p2pkh_script(pub):
+                                raise PSBTLie("OUT %d CLAIMS THIS SEED but pays elsewhere" % n)
+                    elif kind == "OUT" and fp != ZERO_FP:
+                        node = self._derive(root, path)
+                        if node is not None and node.pubkey == pub:
+                            raise PSBTLie("OUT %d PAYS THIS SEED but claims another" % n)
+
+    def _check_sighash(self):
+        """PSBT ขอ sighash อื่นที่ไม่ใช่ ALL = ไม่เซ็น
+
+        🔴 15 ต.ค. 2026 (embit `sign_with` ทำแบบนี้ · BIP174: signer ที่ไม่ยอมรับ sighash ที่ขอต้องปฏิเสธ)
+           เดิมไม่อ่านช่องนี้เลย เซ็น ALL เสมอ — ไม่เสียเงิน แต่ได้ลายเซ็นที่คนขอไม่ได้ขอ
+           (ตอบคำถามข้อ 4 ใน SECURITY_REVIEW.md)
+        """
+        for n, m in enumerate(self.inputs):
+            v = m.get(bytes([IN_SIGHASH_TYPE]))
+            if v is not None and (len(v) != 4 or int.from_bytes(v, "little") != 1):
+                raise PSBTError("SIGHASH NOT ALL input %d - not signed" % n)
+
     def _owned_keys(self, m, prefix, spk, root, fp_root):
         """คืนรายการ (pubkey, path) ที่ 'พิสูจน์แล้ว' ว่าเป็นของเราจริง
 
@@ -373,15 +508,8 @@ class PSBT:
             checked += 1
             if checked > MAX_DERIV_PER_MAP:
                 break
-            self._deriv_steps += len(path)
-            if self._deriv_steps > MAX_DERIV_STEPS:
-                raise PSBTError("PSBT ใหญ่เกินที่เครื่องนี้รับได้ (ไล่กุญแจเกิน %d ชั้น)"
-                                % MAX_DERIV_STEPS)
-            try:
-                node = root
-                for idx in path:
-                    node = node.derive_child(idx)
-            except Exception:
+            node = self._derive(root, path)
+            if node is None:
                 continue
             if node.pubkey != pub:               # ชั้นที่ 2
                 continue
@@ -421,17 +549,26 @@ class PSBT:
            → เงินทอนที่ index 100,000 ถูกซ่อนเป็น CHG · sign() เจอรายการจริงก็เซ็นให้ครบ
            ตอนนี้: นับเฉพาะรายการที่ผ่าน _owned_keys (ไล่กุญแจแล้ว pubkey ตรง + script ตรง)
            ช้าขึ้นเพราะต้องไล่กุญแจของ input ด้วย (ใช้งบ MAX_DERIV_STEPS ร่วมกับ output)
+
+        คืน (เลขสูงสุด, จำนวน input ที่ seed นี้เซ็นได้จริง)
+        🔑 15 ต.ค. 2026: นับ "เซ็นได้จริง" (ไล่กุญแจแล้ว + เป็น p2wpkh) ไว้บอกผู้ใช้ตั้งแต่ก่อนหน้ารีวิว
+           (SeedSigner `_reject_if_seed_cannot_sign`) · เดิมผู้ใช้กดผ่านรีวิวครบแล้วค่อยเจอ NOT SIGNED
         """
+        import address as addr
         best = -1
+        signable = 0
         for n, m in enumerate(self.inputs):
             spk = self.input_script_pubkey(n)
             if spk is None:
                 continue
-            for _pub, path, _node in self._owned_keys(m, IN_BIP32_DERIVATION, spk, root, fp_root):
+            owned = self._owned_keys(m, IN_BIP32_DERIVATION, spk, root, fp_root)
+            if any(spk == addr.p2wpkh_script(pub) for pub, _p, _n in owned):
+                signable += 1
+            for _pub, path, _node in owned:
                 if (len(path) == CHANGE_DEPTH and tuple(path[:3]) == acct
                         and path[3] in CHANGE_CHAINS and path[4] > best):
                     best = path[4]
-        return best
+        return best, signable
 
     def _is_change_path(self, path, max_in_idx, acct=CHANGE_ACCOUNT):
         """เส้นทางนี้เป็น "เงินทอนที่กระเป๋าจะหาเจอ" จริงไหม"""
@@ -454,13 +591,22 @@ class PSBT:
 
         คืน dict: outputs (พร้อมธง is_change ที่พิสูจน์แล้ว), fee, ยอดที่ออกจากกระเป๋า
         """
-        import address as addr
-
         fp_root = root.my_fingerprint()
         self._check_not_presigned(fp_root)
+        self._check_sighash()
         acct = change_account(account)
         self._deriv_steps = 0
-        max_in_idx = self._max_input_index(root, fp_root, acct)
+        self._dcache = {}
+        try:
+            return self._describe(root, fp_root, acct, account, testnet)
+        finally:
+            self._dcache = {}              # node ในแคชมีกุญแจส่วนตัว — ไม่เก็บค้างหลังใช้
+
+    def _describe(self, root, fp_root, acct, account, testnet):
+        import address as addr
+
+        self._check_claims(root, fp_root)
+        max_in_idx, inputs_signable = self._max_input_index(root, fp_root, acct)
         total_in = 0
         unknown_in = 0
         # 🔴 input ของเรามาจาก account ไหน (แก้บัค F 15 ก.ย. 2026)
@@ -526,6 +672,7 @@ class PSBT:
         return {
             "inputs": len(self.tx.vin),
             "inputs_mine": inputs_mine,                  # input ที่ประกาศว่าเป็นกุญแจเรา
+            "inputs_signable": inputs_signable,          # input ที่ไล่กุญแจแล้วเซ็นได้จริง (0 = seed ผิด)
             "input_accounts": input_accounts,            # account ของ input เหล่านั้น (None = เส้นทางแปลก)
             "inputs_wrong_account": inputs_wrong_account,  # อยู่นอก account ที่ผู้ใช้เลือก
             "inputs_unknown_amount": unknown_in,
@@ -552,16 +699,25 @@ class PSBT:
         รองรับ p2wpkh (native segwit) เท่านั้น
         input ชนิดอื่นจะข้ามไป ไม่เซ็นมั่ว
         """
-        import address as addr
-
         # ด่านซ้ำของเพดานค่าธรรมเนียม — UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันอีกชั้น (fee() ไม่รู้ยอด = None ไปตกด่าน "ไม่มีจำนวนเงิน" ข้างล่าง)
         if fee_over_cap(self.fee(), sum(o.value for o in self.tx.vout)):
             raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
 
         fp_root = root.my_fingerprint()
         self._check_not_presigned(fp_root)
+        self._check_sighash()
         acct_t = change_account(account) if account is not None else None
         self._deriv_steps = 0
+        self._dcache = {}
+        try:
+            return self._sign(root, fp_root, acct_t, sighash_type)
+        finally:
+            self._dcache = {}
+
+    def _sign(self, root, fp_root, acct_t, sighash_type):
+        import address as addr
+
+        self._check_claims(root, fp_root)       # ด่านซ้ำ — describe() ตรวจแล้ว แต่ sign() ต้องไม่พึ่งว่าใครเรียกอะไรก่อน
         signed = 0
         for n in range(len(self.tx.vin)):
             m = self.inputs[n]

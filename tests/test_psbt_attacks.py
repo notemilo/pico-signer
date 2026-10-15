@@ -43,22 +43,43 @@ def timed(fn):
     t0 = time.time(); r = fn(); return r, time.time() - t0
 
 
+def rejects(fn):
+    """เรียก fn แล้วคืน (ชื่อ exception หรือ "ผ่าน?!", เวลา) — ใช้กับเคสที่ต้องถูกปฏิเสธ"""
+    t0 = time.time()
+    try:
+        fn(); why = "ผ่าน?!"
+    except psbt.PSBTError as e:
+        why = type(e).__name__
+    return why, time.time() - t0
+
+
+def fix_tx(ps):
+    """serialize() เขียน self.g ตรง ๆ ไม่ได้แปลง self.tx กลับ -> ยัด tx ที่แก้แล้วเข้าไปเอง"""
+    ps.g.items_ = [(k, v) for k, v in ps.g.items_ if k[0] != psbt.GLOBAL_UNSIGNED_TX]
+    ps.g.items_.insert(0, (bytes([psbt.GLOBAL_UNSIGNED_TX]), ps.tx.serialize(with_witness=False)))
+    return psbt.PSBT.parse(ps.serialize())
+
+
+def path_bytes(fp, path):
+    return fp + b"".join(v.to_bytes(4, "little") for v in path)
+
+
 def main():
     fails = 0
 
-    # 1) path ลึก 300 ชั้นที่ output — ต้องจบเร็ว และต้องไม่ถูกนับเป็นเงินทอน
+    # 1) path ลึก 300 ชั้นที่ output — ต้องจบเร็ว
+    #    15 ต.ค. 2026: อ้าง fingerprint เราแต่ลึกเกินจริง = โกหก → ปฏิเสธทั้งใบ (เดิม: ข้ามเงียบ ๆ ไปเป็น 'ส่งออก')
     deep = FP + b"".join((5).to_bytes(4, "little") for _ in range(300))
-    info, dt = timed(lambda: psbt.PSBT.parse(with_deriv("out", deep)).describe(ROOT))
-    ok = dt < 0.2 and all(not o["is_change"] for o in info["outputs"])
+    why, dt = rejects(lambda: psbt.PSBT.parse(with_deriv("out", deep)).describe(ROOT))
+    ok = dt < 0.2 and why == "PSBTLie"
     fails += not ok
-    print("1. path 300 ชั้นที่ output  : %.3fs · ทุก output ถูกมองเป็น 'ส่งออก' = %s  %s"
-          % (dt, all(not o["is_change"] for o in info["outputs"]), "ผ่าน" if ok else "ไม่ผ่าน"))
+    print("1. path 300 ชั้นที่ output  : %.3fs · %s  %s" % (dt, why, "ผ่าน" if ok else "ไม่ผ่าน"))
 
     # 2) path ลึก 300 ชั้นที่ input — sign() ต้องจบเร็ว และต้องไม่เซ็น
-    n, dt = timed(lambda: psbt.PSBT.parse(with_deriv("in", deep)).sign(ROOT))
-    ok = dt < 0.2 and n == 0
+    why, dt = rejects(lambda: psbt.PSBT.parse(with_deriv("in", deep)).sign(ROOT))
+    ok = dt < 0.2 and why == "PSBTLie"
     fails += not ok
-    print("2. path 300 ชั้นที่ input   : %.3fs · เซ็นไป %d input  %s" % (dt, n, "ผ่าน" if ok else "ไม่ผ่าน"))
+    print("2. path 300 ชั้นที่ input   : %.3fs · %s  %s" % (dt, why, "ผ่าน" if ok else "ไม่ผ่าน"))
 
     # 3) รายการปลอม 50 รายการต่อ output ลึก 8 ชั้น (พอดีเพดาน) — งบรวมต้องหยุดมัน
     p8 = FP + b"".join((5).to_bytes(4, "little") for _ in range(8))
@@ -324,13 +345,13 @@ def main():
     ps.g.items_ = [(k, v) for k, v in ps.g.items_ if k[0] != psbt.GLOBAL_UNSIGNED_TX]
     ps.g.items_.insert(0, (bytes([psbt.GLOBAL_UNSIGNED_TX]), ps.tx.serialize(with_witness=False)))
     p = attach_prev(psbt.PSBT.parse(ps.serialize()))
-    info = p.describe(ROOT)
-    hidden = sum(o["is_change"] for o in info["outputs"])
-    shown = [o for o in info["outputs"] if o.get("odd_owned")]
-    ok = hidden == 0 and len(shown) == 1
+    # 15 ต.ค. 2026: รายการที่ 2 ในช่องเดียว = ปฏิเสธทั้งใบตั้งแต่ทางเข้า (เดิม 12 ต.ค.: ผ่านแต่ไม่ซ่อนทอน)
+    why_d, _ = rejects(lambda: p.describe(ROOT))
+    why_s, _ = rejects(lambda: attach_prev(psbt.PSBT.parse(ps.serialize())).sign(ROOT))
+    ok = why_d == "PSBTError" and why_s == "PSBTError"
     fails += not ok
-    print("19. derivation ปลอมถ่างช่วงทอน : ซ่อนเป็น CHG %d · โชว์เป็นปลายทาง %d  %s"
-          % (hidden, len(shown), "ผ่าน" if ok else "ไม่ผ่าน"))
+    print("19. derivation ปลอมถ่างช่วงทอน : describe %s · sign %s  %s"
+          % (why_d, why_s, "ผ่าน" if ok else "ไม่ผ่าน"))
 
     # 20) PSBT ที่มีลายเซ็นของกุญแจเราติดมาแล้ว (ปลอม) = BAD PSBT ไม่เซ็นซ้อน (ผู้รีวิวภายนอก ข้อ 4)
     ps = psbt.PSBT.parse(RAW)
@@ -352,6 +373,113 @@ def main():
     fails += not ok
     print("20. ลายเซ็นของเราติดมาแล้ว     : describe/sign = %s · ลายเซ็นคนอื่นยังผ่าน %s  %s"
           % (res, other_ok, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # ── 21-27: 15 ต.ค. 2026 แนวคิดจาก SeedSigner (tests/test_psbt_parser.py) เขียนใหม่ด้วย PSBT ของเรา ──
+    H = psbt.HARDENED
+    CHG_PATH = (84 + H, 0 + H, 0 + H, 1, 0)
+
+    def swap_deriv(where, idx, newkey_pub, newval):
+        """แทน derivation ของ output/input ลำดับ idx ด้วยรายการเดียว (pubkey, value)"""
+        ps = psbt.PSBT.parse(RAW)
+        m = (ps.outputs if where == "out" else ps.inputs)[idx]
+        tag = OUT_DERIV if where == "out" else IN_DERIV
+        m.items_ = [(k, v) for k, v in m.items_ if k[0] != tag] + [(bytes([tag]) + newkey_pub, newval)]
+        return ps
+
+    chg_idx = [n for n, m in enumerate(psbt.PSBT.parse(RAW).outputs)
+               if any(k[0] == OUT_DERIV for k, _ in m.items_)][0]
+    real_chg_pub = [k[1:] for k, _ in psbt.PSBT.parse(RAW).outputs[chg_idx].items_ if k[0] == OUT_DERIV][0]
+    real_in_pub = [k[1:] for k, _ in psbt.PSBT.parse(RAW).inputs[0].items_ if k[0] == IN_DERIV][0]
+    fake_pub = b"\x02" + b"\x44" * 32
+
+    # 21) output อ้าง fingerprint เรา แต่ pubkey ไม่ใช่ที่ derive ได้ (SS: rejects_a_forged_claim_on_an_output)
+    ps = swap_deriv("out", chg_idx, fake_pub, path_bytes(FP, CHG_PATH))
+    why, _ = rejects(lambda: psbt.PSBT.parse(ps.serialize()).describe(ROOT))
+    ok = why == "PSBTLie"
+    fails += not ok
+    print("21. output อ้าง fp เรา key ปลอม : %s  %s" % (why, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 22) input อ้าง fingerprint เรา แต่ pubkey ปลอม (SS: rejects_a_forged_claim_on_an_input) — ทั้ง describe และ sign
+    in_path = psbt._parse_derivation(psbt.PSBT.parse(RAW).inputs[0].get(bytes([IN_DERIV]) + real_in_pub))[1]
+    ps = swap_deriv("in", 0, fake_pub, path_bytes(FP, in_path))
+    why_d, _ = rejects(lambda: psbt.PSBT.parse(ps.serialize()).describe(ROOT))
+    why_s, _ = rejects(lambda: psbt.PSBT.parse(ps.serialize()).sign(ROOT))
+    ok = why_d == "PSBTLie" and why_s == "PSBTLie"
+    fails += not ok
+    print("22. input อ้าง fp เรา key ปลอม  : describe %s · sign %s  %s" % (why_d, why_s, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 23) output อ้างว่าเป็นของเรา (path + pubkey จริง) แต่ scriptPubKey จ่ายให้คนอื่น
+    #     (SS: rejects_an_output_that_claims_this_seed_but_pays_someone_else)
+    ps = psbt.PSBT.parse(RAW)
+    ps.tx.vout[chg_idx].script_pubkey = addr.p2wpkh_script(fake_pub)
+    why, _ = rejects(lambda: fix_tx(ps).describe(ROOT))
+    ok = why == "PSBTLie"
+    fails += not ok
+    print("23. อ้างว่าเรา แต่จ่ายคนอื่น     : %s  %s" % (why, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 24) output จ่ายเข้ากุญแจเราจริง แต่อ้าง fingerprint คนอื่น (SS: rejects_an_output_that_pays_this_seed_but_claims_someone_else)
+    #     fingerprint 0000 = "ไม่ระบุ" (กระเป๋าบางตัว) ต้องไม่ถูกหาว่าโกหก — แค่ไม่นับเป็นเงินทอน
+    ps = swap_deriv("out", chg_idx, real_chg_pub, path_bytes(b"\xde\xad\xbe\xef", CHG_PATH))
+    why, _ = rejects(lambda: psbt.PSBT.parse(ps.serialize()).describe(ROOT))
+    ps0 = swap_deriv("out", chg_idx, real_chg_pub, path_bytes(psbt.ZERO_FP, CHG_PATH))
+    info0 = psbt.PSBT.parse(ps0.serialize()).describe(ROOT)
+    ok = why == "PSBTLie" and info0["change"] == 0
+    fails += not ok
+    print("24. จ่ายเข้าเรา แต่อ้างคนอื่น   : %s · fp 0000 ผ่านและไม่นับเป็นทอน %s  %s"
+          % (why, info0["change"] == 0, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 25) sighash: ไม่มี / ALL = เซ็นได้ · NONE หรือค่าผิดรูป = ไม่เซ็น ทั้ง describe และ sign (embit sign_with)
+    res = []
+    for val in (None, (1).to_bytes(4, "little"), (2).to_bytes(4, "little"), (0x81).to_bytes(4, "little"), b"\x01"):
+        ps = psbt.PSBT.parse(RAW)
+        if val is not None:
+            ps.inputs[0].items_.append((bytes([psbt.IN_SIGHASH_TYPE]), val))
+        q = psbt.PSBT.parse(ps.serialize())
+        why_d, _ = rejects(lambda: q.describe(ROOT))
+        why_s, _ = rejects(lambda: psbt.PSBT.parse(ps.serialize()).sign(ROOT))
+        res.append((why_d, why_s))
+    ok = res[:2] == [("ผ่าน?!", "ผ่าน?!")] * 2 and all(r == ("PSBTError", "PSBTError") for r in res[2:])
+    fails += not ok
+    print("25. sighash ไม่มี/ALL/NONE/ALL|ACP/ผิดรูป : %s  %s"
+          % (["ok" if r[0] == "ผ่าน?!" else "ปฏิเสธ" for r in res], "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 26) seed ผิด: describe ต้องบอก inputs_signable = 0 (ไม่ใช่หาว่าโกหก) · seed ถูก = 1
+    #     (SS: rejects_a_seed_that_owns_no_input — ของเราให้ UI บอกก่อนหน้ารีวิว)
+    other = bip32.HDKey.from_seed(bip39.seed(devseed.get("vector-alt")[0]))
+    i_other = psbt.PSBT.parse(RAW).describe(other)
+    i_ok = psbt.PSBT.parse(RAW).describe(ROOT)
+    ok = i_other["inputs_signable"] == 0 and i_ok["inputs_signable"] == 1
+    fails += not ok
+    print("26. seed ผิด → เซ็นได้ 0 input  : seed ผิด %d · seed ถูก %d  %s"
+          % (i_other["inputs_signable"], i_ok["inputs_signable"], "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 27) แคช derive: ผลเท่าเดิม · ใช้ชั้นน้อยลง · ไม่เหลือ node (มีกุญแจส่วนตัว) ค้างหลังจบ
+    p = psbt.PSBT.parse(RAW)
+    i1 = p.describe(ROOT)
+    steps = p._deriv_steps
+    naive = 2 * 5 * (len(p.inputs) + len(p.outputs))     # ไล่ซ้ำ 2 รอบ x 5 ชั้น ถ้าไม่มีแคช
+    ok = i1 == i_ok and steps < naive and p._dcache == {}
+    fails += not ok
+    print("27. แคช derive               : ใช้ %d ชั้น (ไม่มีแคช ~%d) · แคชว่างหลังจบ %s  %s"
+          % (steps, naive, p._dcache == {}, "ผ่าน" if ok else "ไม่ผ่าน"))
+
+    # 28) export_signed: ตัด tx เก่า/derivation/xpub ออก เก็บลายเซ็น+witness utxo · input ที่ไม่มี witness utxo ต้องเก็บ tx เก่าไว้
+    p = psbt.PSBT.parse(RAW)
+    p.sign(ROOT)
+    t = psbt.PSBT.parse(p.export_signed())
+    kinds_in = [k[0] for k, _ in t.inputs[0].items_]
+    kinds_out = [k[0] for m in t.outputs for k, _ in m.items_]
+    ok1 = (psbt.IN_PARTIAL_SIG in kinds_in and psbt.IN_WITNESS_UTXO in kinds_in
+           and psbt.IN_NON_WITNESS_UTXO not in kinds_in and IN_DERIV not in kinds_in
+           and OUT_DERIV not in kinds_out and t.tx.serialize(False) == p.tx.serialize(False))
+    q = psbt.PSBT.parse(RAW)
+    q.inputs[0].items_ = [(k, v) for k, v in q.inputs[0].items_ if k[0] != psbt.IN_WITNESS_UTXO]
+    tq = psbt.PSBT.parse(psbt.PSBT.parse(q.serialize()).export_signed())
+    ok2 = psbt.IN_NON_WITNESS_UTXO in [k[0] for k, _ in tq.inputs[0].items_]
+    ok = ok1 and ok2 and len(p.export_signed()) < len(p.serialize())
+    fails += not ok
+    print("28. export_signed             : %d → %d ไบต์ · เก็บลายเซ็น+witness utxo %s · ไม่มี witness utxo = เก็บ tx เก่า %s  %s"
+          % (len(p.serialize()), len(p.export_signed()), ok1, ok2, "ผ่าน" if ok else "ไม่ผ่าน"))
 
     print()
     if fails:
