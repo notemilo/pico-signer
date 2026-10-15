@@ -12,6 +12,10 @@ No radio, no stored secrets: the seed lives in RAM only and is gone when power i
 > in the test suite. Do not trust it with funds you cannot afford to lose.
 > Outside review is welcome — see [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
 
+**Version:** see [`VERSION`](VERSION) and [`CHANGELOG.md`](CHANGELOG.md) — each version is also published under
+[Releases](https://github.com/notemilo/pico-signer/releases). The device shows its version on the boot screen and under
+Status → A.
+
 ## Demo
 
 https://github.com/user-attachments/assets/a9c1817c-8d00-4a1c-adfd-76cc2527b1d8
