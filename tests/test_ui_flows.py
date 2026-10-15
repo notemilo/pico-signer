@@ -22,6 +22,8 @@ _m.Pin = type("Pin", (), {"__init__": lambda s, *a, **k: None, "IN": 0, "OUT": 1
 _m.SPI = type("SPI", (), {"__init__": lambda s, *a, **k: None, "write": lambda s, *a: None})
 _m.I2C = type("I2C", (), {"__init__": lambda s, *a, **k: None, "scan": lambda s: [],
                           "readfrom_mem": lambda s, *a: b"\x00\x00"})
+_m.UART = type("UART", (), {"__init__": lambda s, *a, **k: None, "any": lambda s: 0,
+                            "read": lambda s, *a: b"", "deinit": lambda s: None})
 sys.modules["machine"] = _m
 _f = types.ModuleType("framebuf")
 _f.FrameBuffer = type("FrameBuffer", (), {"__init__": lambda s, *a, **k: None})
@@ -132,6 +134,7 @@ class FakeScanner:
 
 _sc.Scanner = FakeScanner
 sys.modules["scanner"] = _sc
+ui.scanner = _sc        # 15 ต.ค. 2026: ui import scanner ตั้งแต่โหลดโมดูล (กันแรมไม่พอตอนสแกน) → ต้องแทนในตัว ui ด้วย
 
 fails = 0
 

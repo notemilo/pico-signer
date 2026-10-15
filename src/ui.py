@@ -27,6 +27,14 @@ import bbqr
 import seedqr
 import ups
 import hashes
+# 🔴 15 ต.ค. 2026: โหลดโค้ดเซ็น PSBT ตั้งแต่เปิดเครื่อง (เดิม import ตอนกด Sign)
+#    เครื่องค้างที่ "GOT 1/2" หลังสแกน PSBT จาก wallet — crash.txt: MemoryError ที่ `import psbt` ใน screen_sign
+#    psbt.py ใหญ่ขึ้นใน 2.17.0 · MicroPython คอมไพล์ .py บนเครื่องต้องใช้แรมก้อนติดกัน
+#    หลังใส่ seed + passphrase + สแกน แรมแตกเป็นเศษ หาก้อนไม่ได้ → ตอนเปิดเครื่องแรมยังว่างเป็นก้อนใหญ่
+#    แลกกับแรมที่จองค้างไว้ ~32 KB (วัดบนเครื่อง) และเปิดเครื่องช้าขึ้น ~0.65 วิ
+import psbt
+import scanner
+import addrverify
 
 WL = "english.txt"
 
@@ -88,7 +96,9 @@ def next_letters(words, prefix):
     n = len(prefix)
     out = []
     exact = False
-    for w in words:
+    # 15 ต.ค. 2026: รายการคำแบบก้อนเดียว (bip39.WordList) หาเฉพาะช่วงที่ขึ้นต้นด้วย prefix ได้เลย ไม่ต้องไล่ 2,048 คำทุกครั้งที่กดปุ่ม
+    pool = words.with_prefix(prefix) if hasattr(words, "with_prefix") else words
+    for w in pool:
         if not w.startswith(prefix):
             continue
         if len(w) == n:
@@ -520,7 +530,8 @@ class App:
                     matches = [prefix]
                     shown = prefix + "<"
                 else:
-                    matches = [w for w in words if w.startswith(prefix + ch)]
+                    matches = (words.with_prefix(prefix + ch) if hasattr(words, "with_prefix")
+                               else [w for w in words if w.startswith(prefix + ch)])
                     shown = prefix + ch.upper()
                 self.d.clear(lcd.BLACK)
                 y = self._chrome("W %d/%d" % (len(got) + 1, count),
@@ -670,6 +681,10 @@ class App:
         if not same_seed:
             self.account = 0
         dt = time.ticks_diff(time.ticks_ms(), t0)
+        # 🔑 15 ต.ค. 2026: ใส่ seed เสร็จแล้วไม่ต้องใช้รายการคำ (68 KB) — ปล่อยคืนให้ขั้นเซ็น/ทำ QR
+        #    (ฟังก์ชันที่ต้องใช้จะเรียก bip39.wordlist() โหลดใหม่เอง)
+        bip39.release_wordlist()
+        gc.collect()
         fp = self.root.my_fingerprint().hex().upper()
         self.message("READY", [
             "FP " + fp,
@@ -1090,11 +1105,14 @@ class App:
     #    บั๊กตรงนี้ = ผู้ใช้กดยืนยันโดยเห็นตัวเลขชุดหนึ่ง แต่เซ็นอีกชุดหนึ่ง
     #    หลักที่ยึด: **แสดงทุกอย่างที่กระทบเงิน และปฏิเสธเมื่อไม่มั่นใจ**
     def screen_sign(self, src):
-        import psbt as P
         if not self.root:
             self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
             return
+        # 🔑 15 ต.ค. 2026: เครื่องค้างที่ "GOT 1/2" หลังสแกน PSBT จาก wallet (seed + passphrase · ทำซ้ำบนโต๊ะไม่ได้)
+        #    ต้นเหตุ (crash.txt): MemoryError ตอน import psbt → แก้ด้วยการโหลดตั้งแต่เปิดเครื่อง (หัวไฟล์)
+        #    จอยังบอกขั้น DECODING (ถอด QR) → READING (ตรวจ PSBT) ไว้ เผื่อมีอาการแบบนี้อีกจะรู้ว่าค้างขั้นไหน
+        P = psbt                      # โหลดไว้ตั้งแต่เปิดเครื่องแล้ว (ดูหัวไฟล์)
         self.message("PSBT", ["READING..."], "")
         gc.collect()
         try:
@@ -1269,7 +1287,7 @@ class App:
         เราแค่คอยเก็บบรรทัดที่เข้ามาแล้วโยนให้ bbqr.Decoder เรียงเอง
         เฟรมซ้ำไม่เป็นไร — Decoder ตัดซ้ำให้อยู่แล้ว
         """
-        import scanner as SC
+        SC = scanner
         try:
             sc = SC.Scanner()
         except Exception as e:
@@ -1327,6 +1345,7 @@ class App:
             self.screen_sign(raw_b64)
             return
 
+        self.message("SCAN QR", ["GOT %d/%d" % (dec.have, dec.total), "", "DECODING..."], "")
         try:
             res = dec.result()
         except MemoryError:
@@ -1408,7 +1427,7 @@ class App:
 
         แยกออกมา 15 ต.ค. 2026 ให้ใช้ร่วม Load SeedQR และ "ตรวจกระดาษ" หลังวาด SeedQR
         """
-        import scanner as SC
+        SC = scanner
         import seedqr
 
         try:
@@ -1502,8 +1521,8 @@ class App:
         ค้นทีละ VERIFY_BATCH เลข สลับ รับ/ทอน · ไม่เจอถามว่าค้นช่วงถัดไปไหม (แบบ Jade)
         🔑 ไม่เจอ ≠ โดนโกงเสมอ: อาจเป็น account อื่นหรือเลขสูงกว่าที่ค้น
         """
-        import scanner as SC
-        import addrverify as AV
+        SC = scanner
+        AV = addrverify
         if not self.root:
             self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
@@ -1706,7 +1725,11 @@ def splash(app, seconds=5):
     app.wait_key(timeout_ms=seconds * 1000)
 
 
+APP = None      # main.py ใช้จอของแอปนี้วาดหน้า CRASH (จองจอใหม่ 115 KB ตอนแรมหมดไม่ได้ — 15 ต.ค. 2026)
+
+
 def main():
-    app = App()
-    splash(app)
-    app.run()
+    global APP
+    APP = App()
+    splash(APP)
+    APP.run()

@@ -9,15 +9,114 @@ from hashes import sha256, pbkdf2_hmac_sha512
 _WORDLIST = None
 
 
+class WordList:
+    """รายการคำ 2,048 คำเก็บเป็น "ก้อนเดียว" (ไบต์ทั้งไฟล์ + ตารางตำแหน่ง) แทน list ของ str 2,048 ชิ้น
+
+    🔴 15 ต.ค. 2026: เครื่อง CRASH (MemoryError) ตอนโหลดรายการคำเพื่อถอด SeedQR (crash.txt: bip39.py listcomp)
+       วัดบน Pico: list 2,048 str กินแรม 68 KB และหั่นแรมเป็นเศษ — ก้อนติดกันใหญ่สุดเหลือ 28 KB
+       แบบนี้: ไฟล์ ~13 KB + ตารางตำแหน่ง 4 KB = 2 ก้อน · ไม่ทิ้งเศษ
+    ใช้ได้เหมือน list ในส่วนที่โค้ดใช้: [i] · index(w) · len · for · in · with_prefix(p)
+    🔑 รายการ BIP39 ภาษาอังกฤษเรียงตามตัวอักษร → index/with_prefix ใช้ binary search (ตรวจตอนโหลด)
+    """
+
+    def __init__(self, data):
+        if b"\r" in data:
+            data = data.replace(b"\r", b"")
+        data = data.strip()
+        starts = [0]
+        i = data.find(b"\n")
+        while i >= 0:
+            starts.append(i + 1)
+            i = data.find(b"\n", i + 1)
+        if len(starts) != 2048:
+            raise ValueError("wordlist ต้องมี 2048 คำ ได้ %d" % len(starts))
+        try:
+            from array import array
+            self._s = array("H", starts)        # ตำแหน่งเริ่มของแต่ละคำ (ไฟล์ < 64 KB)
+        except ImportError:
+            self._s = starts
+        self._d = bytes(data)
+        prev = b""
+        for k in range(2048):
+            w = self._raw(k)
+            if not w or w <= prev:
+                raise ValueError("wordlist ต้องเรียงตามตัวอักษรและไม่ว่าง (คำที่ %d)" % (k + 1))
+            prev = w
+
+    def _raw(self, k):
+        e = self._s[k + 1] - 1 if k < 2047 else len(self._d)
+        return self._d[self._s[k]:e]
+
+    def __len__(self):
+        return 2048
+
+    def __getitem__(self, k):
+        if k < 0:
+            k += 2048
+        if k < 0 or k >= 2048:
+            raise IndexError("wordlist index")
+        return self._raw(k).decode()
+
+    def __iter__(self):
+        for k in range(2048):
+            yield self._raw(k).decode()
+
+    def _lower(self, b):
+        """ลำดับแรกที่คำ >= b"""
+        lo, hi = 0, 2048
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._raw(mid) < b:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def index(self, w):
+        b = w.encode() if isinstance(w, str) else bytes(w)
+        k = self._lower(b)
+        if k < 2048 and self._raw(k) == b:
+            return k
+        raise ValueError("not in wordlist")
+
+    def __contains__(self, w):
+        try:
+            self.index(w)
+            return True
+        except ValueError:
+            return False
+
+    def with_prefix(self, prefix):
+        """ทุกคำที่ขึ้นต้นด้วย prefix (เรียงตามตัวอักษร) — ไม่ต้องไล่ทั้ง 2,048 คำ"""
+        b = prefix.encode()
+        k = self._lower(b)
+        out = []
+        while k < 2048:
+            w = self._raw(k)
+            if not w.startswith(b):
+                break
+            out.append(w.decode())
+            k += 1
+        return out
+
+
 def wordlist(path="english.txt"):
-    """โหลด wordlist ครั้งเดียวแล้วจำไว้"""
+    """โหลด wordlist ครั้งเดียวแล้วจำไว้ (แบบก้อนเดียว — ดู WordList)"""
     global _WORDLIST
     if _WORDLIST is None:
-        with open(path) as f:
-            _WORDLIST = [w.strip() for w in f if w.strip()]
-        if len(_WORDLIST) != 2048:
-            raise ValueError("wordlist ต้องมี 2048 คำ ได้ %d" % len(_WORDLIST))
+        with open(path, "rb") as f:
+            _WORDLIST = WordList(f.read())
     return _WORDLIST
+
+
+def release_wordlist():
+    """ปล่อยรายการคำคืนแรม — เรียกครั้งหน้าจะอ่านไฟล์ใหม่เอง
+
+    🔑 15 ต.ค. 2026: วัดบน Pico รายการ 2,048 คำกินแรม 68 KB และเดิมค้างไว้ตลอดหลังใส่ seed
+       (test seed ไม่โหลดรายการนี้ — เครื่องค้าง/แรมหมดจึงเกิดเฉพาะตอนใช้ seed )
+    """
+    global _WORDLIST
+    _WORDLIST = None
 
 
 def _bits_from_entropy(entropy):

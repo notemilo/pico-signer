@@ -27,6 +27,8 @@ _m.SPI = type("SPI", (), {"__init__": lambda s, *a, **k: None,
 _m.I2C = type("I2C", (), {"__init__": lambda s, *a, **k: None,
                           "scan": lambda s: [],
                           "readfrom_mem": lambda s, *a: b"\x00\x00"})
+_m.UART = type("UART", (), {"__init__": lambda s, *a, **k: None, "any": lambda s: 0,
+                            "read": lambda s, *a: b"", "deinit": lambda s: None})   # ui import scanner ตั้งแต่โหลด (15 ต.ค. 2026)
 sys.modules["machine"] = _m
 
 _f = types.ModuleType("framebuf")

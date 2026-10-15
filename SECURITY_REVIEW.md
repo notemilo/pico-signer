@@ -90,6 +90,11 @@ Ideas taken from SeedSigner's `psbt_parser.py` and embit's `sign_with` (both MIT
 - BBQr `Z` (raw deflate, wbits 10) is accepted, capped at 48,000 bytes after inflation (`tests/test_bbqr_z.py`).
 - Backup quiz after creating a seed and a scan-to-check step after drawing a SeedQR. The quiz uses no randomness:
   decoys are the neighbouring BIP39 words, the answer position is the word index mod 4.
+- RAM fixes found on hardware (2.17.2-2.17.4): `psbt`, `scanner` and `addrverify` are imported at boot instead of on first
+  use (compiling `psbt.py` after a long passphrase entry raised `MemoryError`); the BIP39 word list is kept as one
+  byte block plus an offset table (`bip39.WordList`, ~10 KB instead of 68 KB in 2,048 small strings) and released
+  after a seed is loaded; the crash screen reuses the app's existing frame buffer. Measured on the board with a
+  5.2 KB PSBT, a seed and a long passphrase: lowest free heap during scan → sign → QR was 227 KB.
 
 ## Known limitations (no need to report)
 

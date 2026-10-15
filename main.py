@@ -43,8 +43,19 @@ else:
         except Exception:
             pass
         try:
+            import gc
             import lcd
-            d = lcd.LCD()
+            # 🔴 15 ต.ค. 2026: MemoryError แล้วจอค้างภาพเดิม กดอะไรก็ไม่ได้ (เหมือนเครื่องแฮงก์)
+            #    เพราะ lcd.LCD() ต้องจองแรมก้อน 115 KB ใหม่ ซึ่งตอนแรมหมดจองไม่ได้ → ข้ามการวาดเงียบ ๆ
+            #    → ใช้จอของแอปที่จองไว้แล้ว (ui.APP.d) ก่อน · ไม่มีค่อยจองใหม่
+            gc.collect()
+            d = None
+            try:
+                d = ui.APP.d
+            except Exception:
+                pass
+            if d is None:
+                d = lcd.LCD()
             d.backlight(True)
             d.clear(lcd.BLACK)
             d.text_big("CRASH", 60, 30, lcd.RED, 3)
