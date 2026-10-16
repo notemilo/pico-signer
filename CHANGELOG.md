@@ -4,6 +4,12 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.18.0 — 2026-10-16
+- Passphrase entry is a full on-screen keyboard (QWERTY, three pages: `abc`, `ABC`, symbols) instead of one
+  character at a time. The joystick moves in four directions; moving past the end of a row continues on the next
+  row. A or joystick press types, X deletes, Y finishes, B quits. The selected key is drawn inverted, and the space
+  key and typed spaces are drawn as grey boxes.
+
 ## 2.17.4 — 2026-10-15
 RAM fix found on hardware: an occasional `MemoryError` while scanning a SeedQR right after boot.
 

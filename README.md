@@ -43,7 +43,7 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 
 - **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator · optional word-by-word quiz against the paper backup before the seed is used
 - Load seed by typing words or scanning **SeedQR** (Standard and Compact)
-- Optional BIP39 passphrase (spaces drawn as grey boxes; fingerprint shown before → after) · BIP84 accounts (`m/84h/0h/<n>h`)
+- Optional BIP39 passphrase typed on a full on-screen keyboard (spaces drawn as grey boxes; fingerprint shown before → after) · BIP84 accounts (`m/84h/0h/<n>h`)
 - **Export xpub** as BBQr (Coldcard Generic JSON)
 - **Sign PSBT** scanned as BBQr (base32, hex or zlib-compressed `Z`), with a review screen for every output · signed PSBT shown back as BBQr, trimmed to the unsigned tx, witness UTXOs and signatures
 - **Verify receive address** — checks that an address shown by your online wallet really belongs to this seed

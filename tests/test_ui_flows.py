@@ -554,6 +554,93 @@ res = []
 left = drive(lambda: res.append(app.quiz_words(_q)), _ans(_q[0]) + ["B"])
 check("กด B กลางทาง = หยุด คืน False", left == 0 and res == [False])
 
+# ═══ 17. 16 ต.ค. 2026 — คีย์บอร์ด passphrase เต็มจอ (แบบ Jade classic) ═══
+print("── 17. passphrase: คีย์บอร์ดเต็มจอ · จอยสติ้ก 4 ทิศ · ข้ามบรรทัด · ครบ ASCII")
+allc = set(" ")
+for pg in ui.PASS_KB:
+    for row in pg:
+        allc |= set(row)
+check("3 หน้า + SPACE = ASCII 32-126 ครบ 95 ตัว = PASS_SETS",
+      allc == set(chr(i) for i in range(32, 127)) == set("".join(c for _n, c in ui.PASS_SETS)))
+check("แถวปุ่มควบคุมกว้างพอดีจอ 240", sum(ui.PASS_CTRL_W) == 240 and len(ui.PASS_CTRL_W) == len(ui.PASS_CTRL))
+
+
+def kb_path(text):
+    """หาลำดับปุ่มที่สั้นที่สุดเพื่อพิมพ์ text (BFS ผ่าน _kb_move จริง) — พิสูจน์ว่าทุกตัวไปถึงได้"""
+    state = (0, 1, 0)
+    keys = []
+    for ch in text:
+        want = "SPACE" if ch == " " else ch
+        seen_s = {state: []}
+        todo = [state]
+        found = None
+        while todo and found is None:
+            s = todo.pop(0)
+            pg, r, c = s
+            rows = ui._kb_rows(pg)
+            k = rows[r][c][2]
+            if k == want:
+                found = seen_s[s]
+                break
+            nxt = [(mv, (pg,) + ui._kb_move(rows, r, c, mv)) for mv in ("UP", "DOWN", "LEFT", "RIGHT")]
+            if k == "SHIFT":
+                nxt.append(("A", (0 if pg == 1 else 1, r, c)))
+            if k == "SYM":
+                nxt.append(("A", (0 if pg == 2 else 2, r, c)))
+            for mv, s2 in nxt:
+                if s2 not in seen_s:
+                    seen_s[s2] = seen_s[s] + [mv]
+                    todo.append(s2)
+        assert found is not None, "ไปไม่ถึง %r" % ch
+        keys += found + ["A"]
+        state = s
+    return keys
+
+
+app = new_app()
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("")), ["A", "Y"])
+check("เปิดมาอยู่ที่ q · A แล้ว Y = 'q' · เห็นแป้นทั้งแถว",
+      left == 0 and res == ["q"] and seen("w") and seen("p") and seen("ABC") and seen("A=TYPE X=DEL"))
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("")), ["LEFT", "A", "RIGHT", "A", "Y"])
+check("ซ้ายสุดแถว = ข้ามขึ้นไปท้ายแถวบน (0) · ขวาสุดแถว = ลงไปต้นแถวล่าง (q)",
+      left == 0 and res == ["0q"])
+res = []
+# q → ขึ้น 1 → ขึ้นอีก = วนลงแถวควบคุม (ABC) → ขวา 2 = ช่องว่าง → พิมพ์ → ลง = วนกลับแถวบน ตรงแนวช่องว่าง = 5
+left = drive(lambda: res.append(app.screen_passphrase("")), ["UP", "UP", "RIGHT", "RIGHT", "A", "DOWN", "A", "Y"])
+check("ขึ้นจากแถวบนสุด = วนไปแถวปุ่มควบคุม · ลงจากแถวล่างสุด = กลับแถวบนตรงแนว",
+      left == 0 and res == [" 5"])
+ALL = "".join(chr(i) for i in range(32, 127))
+for label, text in (("พิมพ์ ASCII ครึ่งแรก 48 ตัวผ่านจอยสติ้ก", ALL[:48]),
+                    ("พิมพ์ ASCII ครึ่งหลัง 47 ตัว (ยาวสุด 64 จึงแบ่ง 2 รอบ)", ALL[48:]),
+                    ("พิมพ์ข้ามหน้า + ช่องว่าง 'Pass Word 9~'", "Pass Word 9~")):
+    res = []
+    left = drive(lambda: res.append(app.screen_passphrase("")), kb_path(text) + ["Y"])
+    check(label, left == 0 and res == [text])
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("abc")), ["X", "CTRL", "Y"])
+check("X = ลบ · กดจอยสติ้ก (CTRL) = พิมพ์ · แก้ของเดิมได้", left == 0 and res == ["abq"])
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("")), ["A"] * 70 + ["Y"])
+check("ยาวไม่เกิน 64", left == 0 and len(res[0]) == ui.PASS_MAX)
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("p")), ["B", "B", "A", "Y"])
+check("B แล้วตอบไม่ = พิมพ์ต่อได้", left == 0 and res == ["pq"])
+res = []
+left = drive(lambda: res.append(app.screen_passphrase("p")), ["B", "A"])
+check("B แล้วตอบ A = เลิก คืน None", left == 0 and res == [None])
+for test_seed in (False, True):
+    app.is_test = test_seed
+    for pg_keys in ([], kb_path("A"), kb_path("~")):
+        OUT_OF_SCREEN.clear()
+        drive(lambda: app.screen_passphrase(""), pg_keys + ["Y"])
+        if OUT_OF_SCREEN:
+            break
+    check("ปุ่มไม่วาดเลยขอบจอ ทั้ง 3 หน้า (%s)" % ("มีแถบ TEST SEED" if test_seed else "ปกติ"),
+          not OUT_OF_SCREEN)
+app.is_test = False
+
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:
     print("❌ ไม่ผ่าน %d ข้อ" % fails)

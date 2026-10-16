@@ -52,9 +52,73 @@ PASS_SETS = (
 )
 PASS_MAX = 64
 
+# คีย์บอร์ดเต็มจอสำหรับ passphrase (16 ต.ค. 2026 · ผู้ใช้ ขอแบบ Jade classic: เห็นทุกตัว เลื่อนด้วยจอยสติ้ก)
+# ผัง QWERTY เดียวกับคีย์บอร์ดทัชของเครื่องอื่นในโปรเจกต์ — 3 หน้า + แถวปุ่มควบคุม = ASCII 95 ตัวเท่า PASS_SETS
+PASS_KB = (
+    ("1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"),
+    ("1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"),
+    ("!\"#$%&'()*", "+,-./:;<=>", "?@[\\]^_`{|", "}~"),
+)
+PASS_CTRL = ("SHIFT", "SYM", "SPACE", "DEL", "DONE")
+# ป้าย 3 ตัว = 48 พิกเซล · ถ้าแบ่ง 240/5 = 48 เท่ากันหมด ป้ายจะชนกันอ่านเป็น "ABC#+=SPCDEL" (เห็นในภาพจำลอง)
+# → ปุ่มช่องว่างแคบลง (วาดเป็นกล่องเทาแทนคำ แบบเดียวกับที่ใช้แทนช่องว่างทั้งเครื่อง) ให้ที่เหลือมีขอบ
+PASS_CTRL_W = (52, 52, 32, 52, 52)
+KB_KEY_W = 24           # 240 / 10 ปุ่มต่อแถว · ตัวอักษร scale 2 กว้าง 16
+KB_BG = 0x8631          # เทาเข้ม (48,48,48) = 0x3186 สลับไบต์แบบสีใน lcd.py
+
 TITLE_COLS = 10         # เหลือที่ให้เปอร์เซ็นต์แบตมุมขวาบน (สูงสุด "100%" = 4 ตัว)
 HINT_COLS = 15          # 240 พิกเซล / (8 พิกเซล x scale 2) = 15 ตัวพอดี
 HINT_MAX_LINES = 2
+
+
+def _kb_rows(page):
+    """แถวของคีย์บอร์ดหน้านี้ [[(x, กว้าง, ค่า), ...], ...] · แถวสุดท้าย = ปุ่มควบคุม (ทุกหน้ามี 5 แถว)"""
+    rows = []
+    for row in PASS_KB[page]:
+        x0 = (10 - len(row)) * KB_KEY_W // 2          # แถวสั้นวางกลาง แบบคีย์บอร์ดจริง
+        rows.append([(x0 + c * KB_KEY_W, KB_KEY_W, ch) for c, ch in enumerate(row)])
+    ctrl = []
+    x = 0
+    for k, w in zip(PASS_CTRL, PASS_CTRL_W):
+        ctrl.append((x, w, k))
+        x += w
+    rows.append(ctrl)
+    return rows
+
+
+def _kb_move(rows, r, c, key):
+    """เลื่อนตัวเลือก — ซ้าย/ขวาสุดแถวข้ามไปแถวก่อน/ถัดไป · ขึ้น/ลงวนบนล่าง ไปปุ่มที่ตรงแนวที่สุด"""
+    if key == "RIGHT":
+        c += 1
+        if c >= len(rows[r]):
+            r, c = (r + 1) % len(rows), 0
+    elif key == "LEFT":
+        c -= 1
+        if c < 0:
+            r = (r - 1) % len(rows)
+            c = len(rows[r]) - 1
+    else:
+        x, w, _k = rows[r][c]
+        mid = x + w // 2
+        r = (r + (1 if key == "DOWN" else -1)) % len(rows)
+        best = None
+        for i, (x2, w2, _k2) in enumerate(rows[r]):
+            dist = abs(x2 + w2 // 2 - mid)
+            if best is None or dist < best:
+                best, c = dist, i
+    return r, c
+
+
+def _kb_label(k, page):
+    if k == "SHIFT":
+        return "abc" if page == 1 else "ABC"
+    if k == "SYM":
+        return "abc" if page == 2 else "#+="
+    if k == "SPACE":
+        return ""               # วาดกล่องเทาแทน (ดู screen_passphrase)
+    if k == "DONE":
+        return "OK"
+    return k
 
 
 def _hint_lines(hint):
@@ -889,43 +953,69 @@ class App:
         ⚠️ พิมพ์ผิดไปตัวเดียวจะได้กระเป๋าคนละใบ "โดยไม่มี error"
            จึงต้องโชว์ fingerprint หลังใส่เสมอ ให้ผู้ใช้เทียบว่าตรงกับที่เคยได้ไหม
         """
+        # 🔑 16 ต.ค. 2026 (ผู้ใช้ ขอแบบ Jade classic): เดิมเห็นทีละตัว เลื่อนขึ้นลงไล่ตัวอักษร
+        #    → เปลี่ยนเป็นคีย์บอร์ดเต็มจอ จอยสติ้ก 4 ทิศเลื่อน ซ้าย/ขวาสุดแถวข้ามบรรทัดได้
+        #    ปุ่ม X/Y เป็นทางลัด DEL/DONE · กดจอยสติ้กลง (CTRL) = A
         txt = current
-        gi = 0
-        ci = 0
+        page, r, c = 0, 1, 0                      # เริ่มที่ q
+        # สร้างผังปุ่มครั้งเดียวต่อการเข้าหน้านี้ (~150 tuple) — ไม่สร้างใหม่ทุกครั้งที่กดปุ่ม
+        # เพราะ 2.17.2 เจอแรมแตกเป็นเศษหลังพิมพ์ passphrase ยาว ๆ
+        pages = [_kb_rows(i) for i in range(len(PASS_KB))]
         while True:
-            name, chars = PASS_SETS[gi]
-            ch = chars[ci]
+            rows = pages[page]
             self.d.clear(lcd.BLACK)
-            y = self._chrome("PASS %d" % len(txt), "A=ADD X=DEL Y=OK B=QUIT")
-            shown = txt[-14:] if txt else "(empty)"
-            self.d.text_big(shown, 6, y, lcd.WHITE if txt else lcd.GREY, 2)
-            y += 30
-            # ตัวที่กำลังเลือก — โชว์ตัวใหญ่ ช่องว่างแสดงเป็น [SP] ให้เห็นว่ามีอยู่
-            self.d.text_big(ch if ch != " " else "[SP]", 90 if ch != " " else 60,
-                            y, lcd.YELLOW, 3)
-            y += 40
-            self.d.text_big("%s %d/%d" % (name, ci + 1, len(chars)), 6, y, lcd.GREEN, 2)
-            y += 24
-            self.d.text_big("UD=CHR LR=GRP", 6, y, lcd.GREY, 2)
+            y = self._chrome("PASS %d" % len(txt), "A=TYPE X=DEL Y=DONE B=QUIT")
+            if txt:
+                shown = txt[-14:]
+                self.d.text_big(shown, 6, y, lcd.WHITE, 2)
+                # ช่องว่างวาดเป็นกล่องเทา แบบหน้า CONFIRM — ไม่งั้นมองไม่เห็นว่าเผลอเว้นวรรค
+                for j in range(len(shown)):
+                    if shown[j] == " ":
+                        self.d.fill_rect(6 + j * 16 + 3, y + 4, 10, 10, lcd.GREY)
+            else:
+                self.d.text_big("(empty)", 6, y, lcd.GREY, 2)
+            top = y + 24
+            kh = (self._body_bottom - top) // len(rows)
+            for ri in range(len(rows)):
+                ky = top + ri * kh
+                for ci, (x, w, k) in enumerate(rows[ri]):
+                    on = ri == r and ci == c
+                    # ตัวที่เลือก = กลับสีทั้งปุ่ม (พื้นเหลืองตัวดำ) ไม่ใช่แค่เปลี่ยนสีตัวอักษร — คนตาบอดสี
+                    self.d.fill_rect(x + 1, ky + 1, w - 2, kh - 2, lcd.YELLOW if on else KB_BG)
+                    lab = _kb_label(k, page)
+                    if k == "SPACE":
+                        self.d.fill_rect(x + (w - 12) // 2, ky + (kh - 12) // 2, 12, 12,
+                                         lcd.BLACK if on else lcd.GREY)
+                    else:
+                        self.d.text_big(lab, x + (w - len(lab) * 16) // 2, ky + (kh - 17) // 2,
+                                        lcd.BLACK if on else lcd.WHITE, 2)
             self.d.show()
             key = self.wait_key()
-            if key == "UP":
-                ci = (ci - 1) % len(chars)
-            elif key == "DOWN":
-                ci = (ci + 1) % len(chars)
-            elif key in ("LEFT", "RIGHT"):
-                gi = (gi + (1 if key == "RIGHT" else -1)) % len(PASS_SETS)
-                ci = 0
-            elif key in ("A", "CTRL"):
-                if len(txt) < PASS_MAX:
-                    txt += ch
-            elif key == "X":
-                txt = txt[:-1]
-            elif key == "Y":
-                return txt
-            elif key == "B":
+            if key in ("UP", "DOWN", "LEFT", "RIGHT"):
+                r, c = _kb_move(rows, r, c, key)
+                continue
+            if key == "B":
                 if self.confirm("QUIT?", ["DISCARD THIS", "PASSPHRASE?"]):
                     return None
+                continue
+            if key == "X":
+                k = "DEL"
+            elif key == "Y":
+                k = "DONE"
+            elif key in ("A", "CTRL"):
+                k = rows[r][c][2]
+            else:
+                continue
+            if k == "DONE":
+                return txt
+            if k == "DEL":
+                txt = txt[:-1]
+            elif k == "SHIFT":
+                page = 0 if page == 1 else 1      # ตัวเลือกยังอยู่ที่ปุ่มเดิม กดซ้ำ = กลับ
+            elif k == "SYM":
+                page = 0 if page == 2 else 2
+            elif len(txt) < PASS_MAX:
+                txt += " " if k == "SPACE" else k
 
     def screen_set_passphrase(self):
         """เพิ่ม/แก้ passphrase ของ seed ที่โหลดอยู่"""
