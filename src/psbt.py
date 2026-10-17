@@ -69,7 +69,7 @@ def _bip84_account(path):
 def change_account(account=0):
     """(84h, 0h, <account>h) — ส่วนหัวของเส้นทางที่นับเป็นเงินทอนได้"""
     if not isinstance(account, int) or account < 0 or account >= HARDENED:
-        raise ValueError("account ต้องอยู่ในช่วง 0..2^31-1")
+        raise ValueError("ACCOUNT OUT OF RANGE")
     return (84 + HARDENED, 0 + HARDENED, account + HARDENED)
 CHANGE_CHAINS = (0, 1)        # 0 = ช่องรับ · 1 = ช่องเงินทอน (กระเป๋าบางตัวทอนเข้า 0)
 CHANGE_DEPTH = 5              # m/84h/0h/0h/<chain>/<index>
@@ -169,14 +169,14 @@ def _check_key(key, scope):
     data = key[1:]
     if t in _BARE[scope]:
         if data:
-            raise PSBTError("คีย์ชนิด 0x%02x ต้องไม่มีข้อมูลต่อท้าย (ยาว %d)" % (t, len(data)))
+            raise PSBTError("KEY 0x%02x HAS %d EXTRA BYTES" % (t, len(data)))
     elif t in _PUBKEY[scope]:
         if len(data) not in (33, 65):
-            raise PSBTError("คีย์ชนิด 0x%02x ต้องตามด้วย pubkey 33/65 ไบต์ (ได้ %d)"
+            raise PSBTError("KEY 0x%02x BAD PUBKEY LEN %d"
                             % (t, len(data)))
     elif scope == "g" and t == GLOBAL_XPUB:
         if len(data) != 78:
-            raise PSBTError("PSBT_GLOBAL_XPUB ต้องตามด้วย xpub 78 ไบต์ (ได้ %d)" % len(data))
+            raise PSBTError("GLOBAL XPUB BAD LEN %d" % len(data))
 
 
 def _parse_map(b, i, scope):
@@ -185,21 +185,21 @@ def _parse_map(b, i, scope):
     seen = set()          # ⚠️ ต้องเป็น set — list ทำให้ map ใหญ่ ๆ ช้าแบบ n^2
     while True:
         if i >= len(b):
-            raise PSBTError("ข้อมูลขาด: ไม่เจอตัวปิด map")
+            raise PSBTError("TRUNCATED - MAP NOT CLOSED")
         klen, i = read_varint(b, i)
         if klen == 0:
             return m, i
         key = b[i:i + klen]
         if len(key) != klen:
-            raise PSBTError("ข้อมูลขาดกลางคีย์")
+            raise PSBTError("TRUNCATED KEY")
         i += klen
         vlen, i = read_varint(b, i)
         val = b[i:i + vlen]
         if len(val) != vlen:
-            raise PSBTError("ข้อมูลขาดกลางค่า")
+            raise PSBTError("TRUNCATED VALUE")
         i += vlen
         if key in seen:
-            raise PSBTError("คีย์ซ้ำใน map เดียวกัน")
+            raise PSBTError("DUPLICATE KEY IN MAP")
         seen.add(key)
         _check_key(key, scope)
         m.put(key, val)
@@ -215,10 +215,20 @@ def _ser_map(m):
 def _parse_derivation(val):
     """ค่าใน BIP32_DERIVATION = fingerprint 4 ไบต์ + index ละ 4 ไบต์"""
     if len(val) < 4 or (len(val) - 4) % 4 != 0:
-        raise PSBTError("BIP32 derivation ยาวผิดรูป")
+        raise PSBTError("BAD BIP32 DERIVATION LEN")
     fp = val[:4]
     path = [int.from_bytes(val[i:i + 4], "little") for i in range(4, len(val), 4)]
     return fp, path
+
+
+def _last_index(ps):
+    """'m/84h/0h/0h/1/150' -> 150"""
+    return int(ps.rsplit("/", 1)[1])
+
+
+def _chain_of(ps):
+    """'m/84h/0h/0h/1/150' -> 1"""
+    return int(ps.rsplit("/", 2)[1])
 
 
 def path_str(path):
@@ -246,19 +256,25 @@ class PSBT:
     @classmethod
     def parse(cls, raw):
         if raw[:5] != MAGIC:
-            raise PSBTError("ไม่ใช่ PSBT (magic ไม่ตรง)")
+            raise PSBTError("NOT A PSBT - BAD MAGIC")
         p = cls()
         i = 5
         p.g, i = _parse_map(raw, i, "g")
 
+        # 🔑 17 ต.ค. 2026 (รีวิวภายนอก Crypto Guide F-006): BIP174 ให้ปฏิเสธ PSBT เวอร์ชันที่ไม่รู้จัก
+        #    เดิมรู้จักคีย์ 0xFB แต่ไม่เคยอ่านค่า → เวอร์ชันอนาคต (ความหมายฟิลด์อาจเปลี่ยน) ผ่านไปแบบ v0
+        ver = p.g.get(bytes([GLOBAL_VERSION]))
+        if ver is not None and (len(ver) != 4 or int.from_bytes(ver, "little") != 0):
+            raise PSBTError("PSBT VERSION %d NOT SUPPORTED" % int.from_bytes(ver[:4], "little"))
+
         raw_tx = p.g.get(bytes([GLOBAL_UNSIGNED_TX]))
         if raw_tx is None:
-            raise PSBTError("ไม่มี unsigned tx ใน global map")
+            raise PSBTError("NO UNSIGNED TX")
         p.tx = Transaction.parse(raw_tx)
 
         # unsigned tx ต้องเรียงแบบ legacy ห้ามมี marker/flag ของ segwit
         if p.tx.segwit:
-            raise PSBTError("unsigned tx ต้องไม่เรียงแบบ segwit (มี marker/flag)")
+            raise PSBTError("UNSIGNED TX HAS SEGWIT FLAG")
 
         # 🔴 input ซ้ำ (outpoint เดียวกัน 2 ครั้ง) = ธุรกรรมใช้ไม่ได้ และทำให้ยอดขาเข้า/ค่าธรรมเนียมบนจอเพี้ยน (12 ต.ค. 2026)
         seen_op = set()
@@ -271,7 +287,7 @@ class PSBT:
         # unsigned tx ต้องไม่มีลายเซ็นติดมา
         for inp in p.tx.vin:
             if inp.script_sig or inp.witness:
-                raise PSBTError("unsigned tx ต้องไม่มี scriptSig/witness")
+                raise PSBTError("UNSIGNED TX HAS SCRIPTSIG")
 
         for _ in range(len(p.tx.vin)):
             m, i = _parse_map(raw, i, "i")
@@ -281,7 +297,7 @@ class PSBT:
             p.outputs.append(m)
 
         if i != len(raw):
-            raise PSBTError("มีข้อมูลเกินท้ายไฟล์")
+            raise PSBTError("EXTRA BYTES AFTER PSBT")
         return p
 
     @classmethod
@@ -357,15 +373,16 @@ class PSBT:
         vin = self.tx.vin[n]
         # เทียบ bytes ตรง ๆ (txid() คืน hex กลับด้าน · vin.txid เก็บแบบ little-endian ตามที่อยู่ในสาย)
         if bytes(reversed(bytes.fromhex(prev.txid()))) != vin.txid:
-            raise PSBTError("non-witness utxo ของ input %d ไม่ตรงกับ txid ที่อ้าง" % n)
+            raise PSBTError("INPUT %d PREV TX DOES NOT MATCH TXID" % n)
         if vin.vout >= len(prev.vout):
-            raise PSBTError("input %d อ้าง output ที่ %d ที่ไม่มีใน tx เก่า" % (n, vin.vout))
+            raise PSBTError("INPUT %d SPENDS MISSING OUTPUT %d" % (n, vin.vout))
         out = prev.vout[vin.vout]
         wu = m.get(bytes([IN_WITNESS_UTXO]))
         if wu is not None:
-            spk, _ = txmod.read_varbytes(wu, 8)
-            if int.from_bytes(wu[:8], "little") != out.value or spk != out.script_pubkey:
-                raise PSBTError("witness utxo ของ input %d ไม่ตรงกับ tx เก่า" % n)
+            spk, end = txmod.read_varbytes(wu, 8)
+            # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิมไบต์เกินท้าย script ผ่านได้ — README บอกว่าตรวจทุกไบต์ จึงต้องไม่มีส่วนเกิน
+            if end != len(wu) or int.from_bytes(wu[:8], "little") != out.value or spk != out.script_pubkey:
+                raise PSBTError("INPUT %d WITNESS UTXO DOES NOT MATCH PREV TX" % n)
         c = (out.value, out.script_pubkey)
         self._prev_cache[n] = c
         del prev
@@ -398,7 +415,7 @@ class PSBT:
             total_in += a
         total_out = sum(o.value for o in self.tx.vout)
         if total_out > total_in:
-            raise PSBTError("ยอดขาออกมากกว่ายอดขาเข้า — PSBT ผิดปกติ")
+            raise PSBTError("OUTPUTS EXCEED INPUTS")
         return total_in - total_out
 
     # ---------- ตรวจความเป็นเจ้าของ (ด่านความปลอดภัยหลัก) ----------
@@ -652,9 +669,13 @@ class PSBT:
                 change += o.value
             else:
                 sending += o.value
+            a = addr.script_to_address(o.script_pubkey, testnet)
             outs.append({
                 "index": n,
-                "address": addr.script_to_address(o.script_pubkey, testnet),
+                "address": a,
+                # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): ปลายทางที่แปลงเป็นที่อยู่ไม่ได้ จอขึ้นแค่ขนาด script
+                #    = ปลายทางต่างกันแต่หน้าจอเหมือนกัน → UI ปฏิเสธไม่เซ็น
+                "unknown_script": a.startswith("UNKNOWN SCRIPT"),
                 "value": o.value,
                 "is_change": is_change,
                 "odd_owned": odd_owned,
@@ -669,6 +690,26 @@ class PSBT:
         #    และถ้า nSequence ทุกช่องเป็น 0xffffffff -> locktime ไม่มีผลจริง (กับดักที่ Coldcard ดักไว้)
         lt = self.tx.locktime
         seqs = [i.sequence for i in self.tx.vin]
+        # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): relative timelock (BIP68) — tx version 2 ขึ้นไป + nSequence บิต 31 เป็น 0
+        #    = เหรียญนั้นใช้ได้หลังยืนยันครบ N บล็อก (หรือ N x 512 วินาที ถ้าบิต 22 ตั้ง) · เดิมไม่บอกเลย
+        rel_blocks = 0
+        rel_secs = 0
+        if self.tx.version >= 2:
+            for q in seqs:
+                if q & 0x80000000:
+                    continue
+                if q & 0x00400000:
+                    rel_secs = max(rel_secs, (q & 0xFFFF) * 512)
+                else:
+                    rel_blocks = max(rel_blocks, q & 0xFFFF)
+        # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เลขที่อยู่ของเงินทอนสูงสุด (สูงได้ถึง input+200) — จอ REVIEW ต้องบอก
+        #    เพราะกู้กระเป๋าด้วยค่าตั้งต้น (Sparrow ค้น 20 ที่อยู่) อาจหาเงินทอนที่อยู่ไกลไม่เจอ
+        chg_idx = None
+        for o in outs:
+            if o["is_change"]:
+                k = _last_index(o["path"])
+                if chg_idx is None or k > chg_idx[1]:
+                    chg_idx = (_chain_of(o["path"]), k)
         return {
             "inputs": len(self.tx.vin),
             "inputs_mine": inputs_mine,                  # input ที่ประกาศว่าเป็นกุญแจเรา
@@ -685,6 +726,9 @@ class PSBT:
             "locktime_is_time": lt >= 500000000,
             "locktime_no_effect": lt > 0 and all(q == 0xFFFFFFFF for q in seqs),
             "rbf": any(q < 0xFFFFFFFE for q in seqs),
+            "rel_lock_blocks": rel_blocks,
+            "rel_lock_secs": rel_secs,
+            "change_index": chg_idx,          # (chain, index) ของเงินทอนที่ไกลที่สุด · None = ไม่มีเงินทอน
             "fee_over_cap": fee_over_cap(fee, sum(o.value for o in self.tx.vout)),
         }
 
@@ -702,6 +746,11 @@ class PSBT:
         # ด่านซ้ำของเพดานค่าธรรมเนียม — UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันอีกชั้น (fee() ไม่รู้ยอด = None ไปตกด่าน "ไม่มีจำนวนเงิน" ข้างล่าง)
         if fee_over_cap(self.fee(), sum(o.value for o in self.tx.vout)):
             raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
+        # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิม sign() ที่ถูกเรียกตรง ๆ เซ็น input ของเราได้ แม้ input อื่นไม่มี tx เก่า
+        #    (= ไม่รู้ค่าธรรมเนียมจริง) · UI ปฏิเสธก่อนแล้ว แต่ตัวเซ็นต้องไม่พึ่งว่าใครเรียกอะไรก่อน
+        for n in range(len(self.tx.vin)):
+            if self.input_amount(n) is None:
+                raise PSBTError("INPUT %d HAS NO PREV TX - not signed" % n)
 
         fp_root = root.my_fingerprint()
         self._check_not_presigned(fp_root)
@@ -741,7 +790,7 @@ class PSBT:
 
             amount = self.input_amount(n)
             if amount is None:
-                raise PSBTError("input %d ไม่มีจำนวนเงิน เซ็นไม่ได้อย่างปลอดภัย" % n)
+                raise PSBTError("INPUT %d HAS NO AMOUNT - not signed" % n)
 
             digest = self.tx.sighash_segwit_v0(
                 n, addr.p2wpkh_script_code(pub), amount, sighash_type)

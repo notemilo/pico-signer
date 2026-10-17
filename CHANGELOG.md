@@ -4,6 +4,25 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.18.2 — 2026-10-17
+- A PSBT whose `PSBT_GLOBAL_VERSION` is not 0 is refused (BIP174). Found by an automated audit run shared by
+  Crypto Guide.
+
+## 2.18.1 — 2026-10-17
+Fixes from an outside review reported privately through GitHub (GHSA-334h-x4f4-34h3) by **kkdao**. Details in
+[SECURITY_REVIEW.md](SECURITY_REVIEW.md#fixed-after-outside-review-2026-10-17-2181).
+
+- **Review screen no longer cuts amounts.** A 10 BTC fee used to show as `FEE  1,000,000`. Every amount now has its
+  own line (sat below 1 BTC, BTC above), the fee shows its percentage, a review that does not fit is split into
+  pages, and an amount that cannot be shown is refused.
+- README install command now copies `boot.py` (without it USB data stayed on from power-on).
+- Outputs whose script cannot be shown as an address are refused (OP_RETURN still allowed).
+- The review screen shows the change chain and highest index (`CHG 1/150`).
+- If USB cannot be switched off, seed entry is blocked (it used to warn and continue).
+- Relative timelocks (BIP68) are shown; `witness_utxo` with trailing bytes is refused; `sign()` refuses when an
+  input has no previous transaction; PSBT error messages are in English and wrapped on screen.
+- Threat model: physical access with button B / BOOTSEL, and the scanner module being trusted with the seed.
+
 ## 2.18.0 — 2026-10-16
 - Passphrase entry is a full on-screen keyboard (QWERTY, three pages: `abc`, `ABC`, symbols) instead of one
   character at a time. The joystick moves in four directions; moving past the end of a row continues on the next

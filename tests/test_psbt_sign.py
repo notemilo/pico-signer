@@ -139,8 +139,12 @@ def run():
     p4.inputs[0] = P.KVMap()
     p4.inputs[0].put(bytes([P.IN_WITNESS_UTXO]),
                      (100_000).to_bytes(8, "little") + ser_varbytes(stranger_spk))
-    if p4.sign(root) != 0:
-        fails.append("🔴 เซ็น input ที่ไม่ใช่ของเรา")
+    # 17 ต.ค. 2026: input ไม่มี tx เก่า → sign() ปฏิเสธทั้งใบ (PSBTError) ก็นับว่าไม่เซ็น
+    try:
+        if p4.sign(root) != 0:
+            fails.append("🔴 เซ็น input ที่ไม่ใช่ของเรา")
+    except P.PSBTError:
+        pass
 
     # ===== 5. ยอดขาออกมากกว่าขาเข้า ต้องถูกจับได้ =====
     p5 = build(root, [(stranger_spk, 200_000)])

@@ -59,10 +59,16 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
   - fee above 10 % of total outputs, duplicate inputs, outputs above inputs, inputs from another account
   - any key-origin claim about this seed that proves false: a derivation with this seed's fingerprint whose key does not derive, an output that claims this seed but pays elsewhere, or an output that pays this seed while naming another fingerprint (shown as `PSBT LIES`)
   - more than one BIP32 derivation in a single input or output (single-sig only), or a sighash type other than `SIGHASH_ALL`
+  - an output script the screen cannot show as an address (OP_RETURN is shown and allowed), or an amount too large to show in full
+- **Review screen:** every amount is shown in full on its own line (sat below 1 BTC, BTC above) with the fee as a
+  percentage; change shows its chain and highest index; nLockTime and relative timelocks (BIP68) get their own screen.
   - change is hidden from the review only if it is a `p2wpkh` output of this seed on the selected account's BIP84 path, within a bounded index; anything else is shown as a destination
 - **No PIN:** whoever holds the device while a seed is loaded can use it.
 - **No secure boot:** someone with physical access can reflash the device. The firmware hash (below) covers MicroPython and the C modules only; the app's `.py` files live on the filesystem.
 - The scanner's light cannot be switched off in software and it draws most of the power (~120 of ~133 mA).
+- The scanner module's firmware is trusted with the seed (a SeedQR scan passes through it), and it obeys its
+  vendor's configuration QR codes.
+- Anyone who has the device while it is off can hold **B** at power-on and replace the app over USB.
 
 ## Firmware
 
@@ -90,8 +96,11 @@ SHA256 `830427af1d8349239d72e94806109fb7c3d1ffc76b35e7fdad41d6b1abbb2a0a` (built
 
 ```sh
 pip install mpremote
-for f in src/*.py src/english.txt main.py; do mpremote cp "$f" :"$(basename "$f")"; done
+for f in src/*.py src/english.txt main.py boot.py; do mpremote cp "$f" :"$(basename "$f")"; done
 ```
+
+`boot.py` is what switches USB data off from power-on; without it the REPL stays reachable over USB until a seed
+is entered. To copy files again later, hold **B** while powering on.
 
 Fonts: `src/lcd.py` uses MicroPython's built-in 8×8 font. A nicer bitmap font can be dropped in as `font_sfmono.py` (same format), but none is included here for licensing reasons.
 

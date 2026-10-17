@@ -107,7 +107,7 @@ ui.App.wait_key = fake_wait_key
 # แล้วเทสหน้าจริงแยกไว้ท้ายไฟล์ (หัวข้อ USB)
 GUARD_CALLS = []
 _REAL_GUARD = ui.App.guard_usb
-ui.App.guard_usb = lambda self: GUARD_CALLS.append(1)
+ui.App.guard_usb = lambda self: GUARD_CALLS.append(1) or True   # 17 ต.ค. 2026: คืน True = ปิดแล้ว ใส่ seed ต่อได้
 
 # ── สแกนเนอร์หลอก ───────────────────────────────────────────────────
 SCAN_TEXT = []      # สิ่งที่ poll() จะคืน (ข้อความ)
@@ -451,8 +451,19 @@ try:
     check("ปิดแล้ว เรียกซ้ำไม่ถามอีก · Status ถูก", left == 0 and not LOG and ok_status)
     ui.usb_data_off = lambda: False
     app = new_app()
-    left = drive(lambda: _REAL_GUARD(app), ["A"])
-    check("ปิดไม่ได้ → เตือน DO NOT PLUG + usb_off=False", left == 0 and not app.usb_off and seen("DO NOT PLUG"))
+    res = []
+    left = drive(lambda: res.append(_REAL_GUARD(app)), ["A"])
+    check("ปิดไม่ได้ → SEED ENTRY BLOCKED + คืน False + usb_off=False",
+          left == 0 and res == [False] and not app.usb_off and seen("SEED ENTRY") and seen("BLOCKED"))
+    # 17 ต.ค. 2026 (รีวิวภายนอก): ปิด USB ไม่ได้ = ห้ามเข้าหน้าใส่ seed (เดิมเตือนแล้วให้ทำต่อ)
+    ui.App.guard_usb = _REAL_GUARD
+    app = new_app()
+    entered = []
+    app.screen_new_seed = lambda: entered.append(1)
+    app.screen_existing_seed = lambda: entered.append(1)
+    drive(app.run, ["A", "A", "DOWN", "A", "A"])
+    check("ปิด USB ไม่ได้ → New/Existing seed ไม่เข้าหน้าใส่ seed", not entered and seen("BLOCKED"))
+    ui.App.guard_usb = lambda self: GUARD_CALLS.append(1) or True
 finally:
     ui.usb_data_off = real_off
 check("บนแมค (ไม่มี machine) usb_data_off คืน False ไม่พัง", ui.usb_data_off() is False)
@@ -528,8 +539,8 @@ app = new_app()
 drive(lambda: app.load_mnemonic(v24, True), ["A"])
 SCAN_TEXT[:] = [open("../test.psbt").read().strip()]
 drive(app.screen_scan, ["A"])
-check("PSBT ปกติ (input ของเราทั้งหมด) หน้า REVIEW ขึ้น 'IN   1' ไม่มีคำว่า MINE",
-      seen("REVIEW") and seen("IN   1") and not seen("MINE"))
+check("PSBT ปกติ (input ของเราทั้งหมด) หน้า REVIEW ขึ้น 'IN 1  ACCT' ไม่มีคำว่า MINE",
+      seen("REVIEW") and seen("IN 1  ACCT") and not seen("MINE"))
 
 # ทดสอบกระดาษหลังสร้าง seed (ไม่มีตัวสุ่ม: คำหลอก = คำข้าง ๆ · ตำแหน่งคำจริง = ลำดับ BIP39 mod 4)
 _q = void[1].split()

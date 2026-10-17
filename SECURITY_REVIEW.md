@@ -29,7 +29,12 @@ Out of scope / accepted:
 - Physical attacker with lab equipment (power analysis, glitching, decapping). There is no secure element
   and no secure boot.
 - Someone holding the device while it is on with a seed loaded (no PIN, by design).
-- The barcode scanner module's own firmware.
+- Someone who has the device while it is off: holding **B** at power-on (or BOOTSEL) gives USB access, and with a
+  cable and a minute they can replace the app. The Status screen shows build metadata from `coreid.py`; it does not
+  verify the installed app.
+- The barcode scanner module's own firmware. It is trusted with the seed: scanning a SeedQR passes the whole seed
+  through it. It also obeys its vendor's configuration QR codes (enabled by default), so a malicious screen could
+  change its settings during a scan; no fund-loss path is known and there is no proven fix in software.
 
 ## Where to look (highest value first)
 
@@ -95,6 +100,34 @@ Ideas taken from SeedSigner's `psbt_parser.py` and embit's `sign_with` (both MIT
   byte block plus an offset table (`bip39.WordList`, ~10 KB instead of 68 KB in 2,048 small strings) and released
   after a seed is loaded; the crash screen reuses the app's existing frame buffer. Measured on the board with a
   5.2 KB PSBT, a seed and a long passphrase: lowest free heap during scan → sign → QR was 227 KB.
+
+## Fixed after outside review (2026-10-17, 2.18.1)
+
+Reported privately through GitHub (GHSA-334h-x4f4-34h3) by **kkdao**, with reproductions. Each point was checked
+against the code and has a regression test (`tests/test_review_amounts.py`, `tests/test_ui_flows.py`).
+
+- **Review screen cut amounts.** Every body line was cut to 14 characters, so `FEE  ` left 9 digits: a 10 BTC fee
+  showed as `FEE  1,000,000`. Amounts now always have a line of their own (sat below 1 BTC, BTC above), are
+  checked to fit, and a review that still does not fit is split into pages instead of dropping lines. An amount
+  that cannot be shown is refused. The fee also shows its percentage.
+- **README install skipped `boot.py`**, so a device built from the README kept USB serial and the REPL from
+  power-on. Fixed in the install command.
+- **Unknown output scripts** showed only `UNKNOWN SCRIPT 35B`, so two different P2PK recipients looked identical.
+  Now refused.
+- **Change index**: the review screen shows the change path's chain and highest index (`CHG 1/150`), since change
+  can be up to 200 addresses past the highest input and a default gap-limit recovery may not look that far.
+- **USB isolation failed open**: if USB could not be switched off, the device warned and still allowed seed
+  entry. Seed entry is now blocked.
+- Relative timelocks (BIP68) are shown; `witness_utxo` with bytes after the script is refused; `sign()` refuses
+  when any input has no previous transaction; PSBT error messages are English and wrapped on screen (they were
+  Thai, which the font cannot draw).
+
+An automated audit run (shared by Crypto Guide, on commit b0f909b) was also checked point by point. Fixed: unknown
+`PSBT_GLOBAL_VERSION` is refused (2.18.2); relative timelocks (same as above). Not changed, with reasons: plain
+`memset()` in the C bridge could be removed by the compiler (to be replaced with a volatile wipe at the next firmware
+build; the seed also lives in the Python heap, so anyone with SWD access can read it anyway); SWD is not disabled
+(physical access is out of scope, and disabling it on the RP2350 is permanent); RBF is not shown (only the key
+holder can sign a replacement); the transaction version is not shown.
 
 ## Known limitations (no need to report)
 

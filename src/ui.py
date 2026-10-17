@@ -195,6 +195,71 @@ def fmt_btc(v):
     return ("-" if neg else "") + "%d.%08d" % (v // 100000000, v % 100000000)
 
 
+# 🔴 17 ต.ค. 2026 (รีวิวภายนอก GHSA-334h-x4f4-34h3): message() ตัดทุกบรรทัดที่ 14 ตัว
+#    เดิม "FEE  " + เลขซาโตชิ เหลือที่ให้ตัวเลขแค่ 9 ตัว → ค่าธรรมเนียม 10 BTC ขึ้นเป็น "FEE  1,000,000" (ดูเหมือน 0.01 BTC)
+#    กฎใหม่: ยอดเงินอยู่บรรทัดของตัวเองเสมอ และต้องพอดี 14 ตัว — ไม่พอดี = ไม่เซ็น (AmountTooBig) ห้ามตัด
+AMT_COLS = 14
+
+
+class AmountTooBig(Exception):
+    pass
+
+
+def fmt_amt(v):
+    """ยอดเงิน 1 บรรทัดพร้อมหน่วย (ไม่เกิน 14 ตัว) · ใช้ไม่ได้ = None
+
+    ต่ำกว่า 1 BTC = SAT มีตัวคั่น (สูงสุด '99,999,999 SAT') · ต่ำกว่า 10 BTC = '9.99999999 BTC'
+    """
+    if 0 <= v < 100000000:
+        return fmt_sat(v) + " SAT"
+    t = fmt_btc(v) + " BTC"
+    return t if len(t) <= AMT_COLS else None
+
+
+def amt_lines(label, v):
+    """[หัวข้อ, ยอดเงิน] สำหรับหน้า REVIEW — ยอด 10 BTC ขึ้นไปย้ายหน่วยไปไว้ท้ายหัวข้อ"""
+    t = fmt_amt(v)
+    if t is not None and len(label) <= AMT_COLS:
+        return [label, t]
+    b = fmt_btc(v)
+    if len(b) > AMT_COLS or len(label) > AMT_COLS:
+        raise AmountTooBig(label)
+    lab = label + " BTC"
+    if len(lab) > AMT_COLS:
+        return [label, b, "BTC"]          # หัวข้อยาว (เช่น CHG 1/99200) → หน่วยลงบรรทัดของมันเอง
+    return [lab, b]
+
+
+def pct_str(part, base):
+    """ร้อยละทศนิยม 1 ตำแหน่ง (ปัดลง) · base 0 = '?'"""
+    if not base:
+        return "?"
+    t = part * 1000 // base
+    return "%d.%d%%" % (t // 10, t % 10)
+
+
+def wrap_text(t, cols=14, max_lines=6):
+    """ตัดข้อความยาวเป็นหลายบรรทัด (ตัดตามช่องว่าง) — ใช้กับข้อความ error ที่เดิมถูกตัดเหลือ 14 ตัว"""
+    out = []
+    cur = ""
+    for w in str(t).split():
+        while len(w) > cols:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(w[:cols])
+            w = w[cols:]
+        cand = w if not cur else cur + " " + w
+        if len(cand) <= cols:
+            cur = cand
+        else:
+            out.append(cur)
+            cur = w
+    if cur:
+        out.append(cur)
+    return out[:max_lines]
+
+
 
 # ── ปิดช่องสั่งงานทาง USB ตอนมี seed (เพิ่ม 12 ต.ค. 2026) ─────────────
 # 🔴 USB ของ Pico = ไฟ + ช่อง REPL ที่สั่งรันโค้ดอะไรก็ได้ ถ้าเสียบเข้าคอมที่มีมัลแวร์ตอน seed อยู่ใน RAM
@@ -338,6 +403,26 @@ class App:
     def confirm(self, title, lines):
         self.message(title, lines, "A=OK  B=CANCEL")
         return self.wait_key(("A", "CTRL", "B")) in ("A", "CTRL")
+
+    def body_rows(self, hint):
+        """จำนวนบรรทัด scale 2 ที่ message() วาดได้ (คิดแถบ TEST SEED และแถบบอกปุ่ม)"""
+        top = (13 if self.is_test else 0) + 28
+        bar_y = 240 - (4 + 18 * len(_hint_lines(hint)))
+        return min(8, max(1, (bar_y - top) // 22))
+
+    def message_pages(self, title, lines, hint="A=NEXT  B=CANCEL", color=lcd.WHITE):
+        """เหมือน message() แต่ถ้าบรรทัดเกินจอ แบ่งเป็นหลายหน้า (ห้ามทิ้งบรรทัดเงียบ ๆ)
+
+        คืน False ถ้ากด B
+        """
+        room = self.body_rows(hint)
+        pages = [lines[i:i + room] for i in range(0, len(lines), room)] or [[]]
+        for k, pg in enumerate(pages):
+            t = title if len(pages) == 1 else "%s %d/%d" % (title[:6], k + 1, len(pages))
+            self.message(t, pg, hint, color)
+            if self.wait_key(("A", "CTRL", "B")) == "B":
+                return False
+        return True
 
     def menu(self, title, items, hint="A=SELECT  B=BACK"):
         """เมนูเลื่อนขึ้นลง — คืน index หรือ None ถ้ากดออก"""
@@ -1220,7 +1305,8 @@ class App:
             self.wait_key(("A", "CTRL"))
             return
         except Exception as e:
-            self.message("BAD PSBT", [str(type(e).__name__)[:14], str(e)[:14]], "A=BACK", lcd.RED)
+            # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิมตัดเหลือ 14 ตัว + ข้อความเป็นภาษาไทยที่จอวาดไม่ได้ → แปลเป็นอังกฤษแล้ว + ตัดบรรทัด
+            self.message("BAD PSBT", [str(type(e).__name__)[:14]] + wrap_text(e, 14, 6), "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
             return
 
@@ -1248,8 +1334,9 @@ class App:
             return
         # 🔴 12 ต.ค. 2026: ค่าธรรมเนียมเกินเพดาน (ดู psbt.MAX_FEE_PCT) = ไม่เซ็น ไม่ใช่แค่เตือน
         if info["fee_over_cap"]:
-            self.message("REFUSED", ["FEE OVER %d%%" % P.MAX_FEE_PCT, "OF TOTAL OUT", "",
-                                     "FEE %s" % fmt_sat(info["fee"]), "", "NOT SIGNED"], "A=BACK", lcd.RED)
+            fl = [fmt_btc(info["fee"])[:14], "BTC"] if fmt_amt(info["fee"]) is None else [fmt_amt(info["fee"])]
+            self.message("REFUSED", ["FEE OVER %d%%" % P.MAX_FEE_PCT, "OF TOTAL OUT", "", "FEE"] + fl
+                         + ["", "NOT SIGNED"], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
             return
 
@@ -1266,6 +1353,15 @@ class App:
             self.wait_key(("A", "CTRL", "B"))
             return
 
+        # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): ปลายทางที่แปลงเป็นที่อยู่ไม่ได้ จอขึ้นแค่ "UNKNOWN SCRIPT 35B"
+        #    ปลายทางคนละอันแต่หน้าจอเหมือนกัน = ผู้ใช้ตรวจไม่ได้ว่าเงินไปไหน → ไม่เซ็น
+        odd = [o["index"] for o in info["outputs"] if o.get("unknown_script")]
+        if odd:
+            self.message("REFUSED", ["OUTPUT %d" % odd[0], "HAS A SCRIPT", "THIS DEVICE", "CANNOT SHOW", "",
+                                     "NOT SIGNED"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+            return
+
         fee = info["fee"]
         send = info["sending"]
         # ⚠️ รวมเหรียญเข้ากระเป๋าตัวเองล้วน ๆ send=0 — เดิมใส่ 999 ทำให้ขึ้น "FEE 999%"
@@ -1273,22 +1369,42 @@ class App:
         #    เทียบกับยอดที่ขยับจริง (ส่งออก หรือถ้าไม่มีก็เงินทอน) แทน
         base = send if send else info["change"]
         pct = (fee * 100 // base) if base else 999
-        lines = [
-            "SEND %s" % fmt_sat(send),
-            " %s" % fmt_btc(send),
-            "FEE  %s" % fmt_sat(fee),
-            "CHG  %s" % fmt_sat(info["change"]),
-            # 🔑 15 ต.ค. 2026: มี input ของคนอื่นปน (payjoin/coinjoin) ต้องเห็น — SEND อาจรวมเงินที่คนอื่นจ่าย
-            ("IN   %d" % info["inputs"]) if info["inputs_mine"] == info["inputs"]
-            else ("IN %d MINE %d" % (info["inputs"], info["inputs_mine"])),
-            "ACCT %d" % self.account,
-        ]
-        if pct >= 10:
-            lines.append("! FEE %d%% !" % pct)
-        self.message("REVIEW", lines, "A=NEXT  B=CANCEL",
-                     lcd.RED if pct >= 10 else lcd.WHITE)
-        if self.wait_key(("A", "CTRL", "B")) == "B":
+        # 🔴 17 ต.ค. 2026 (รีวิวภายนอก GHSA-334h-x4f4-34h3): ทุกยอดเงินมีบรรทัดของตัวเอง ไม่ถูกตัด (ดู amt_lines)
+        #    + เลขที่อยู่เงินทอนที่ไกลที่สุด (CHG 1/150) — กู้กระเป๋าด้วยค่าตั้งต้นอาจหาเงินทอนไกล ๆ ไม่เจอ
+        try:
+            lines = amt_lines("SEND", send)
+            lines += amt_lines(("! FEE %s !" if pct >= 10 else "FEE %s") % pct_str(fee, base), fee)
+            ci = info.get("change_index")
+            if info["change"] and ci is not None:
+                lines += amt_lines("CHG %d/%d" % ci, info["change"])
+            elif info["change"]:
+                lines += amt_lines("CHG", info["change"])
+            else:
+                lines.append("CHG  NONE")
+        except AmountTooBig:
+            self.message("REFUSED", ["AMOUNT TOO", "BIG TO SHOW", "", "NOT SIGNED"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
             return
+        # 🔑 15 ต.ค. 2026: มี input ของคนอื่นปน (payjoin/coinjoin) ต้องเห็น — SEND อาจรวมเงินที่คนอื่นจ่าย
+        if info["inputs_mine"] == info["inputs"]:
+            lines.append("IN %d  ACCT %d" % (info["inputs"], self.account))
+        else:
+            lines += ["IN %d MINE %d" % (info["inputs"], info["inputs_mine"]), "ACCT %d" % self.account]
+        if not self.message_pages("REVIEW", lines, "A=NEXT  B=CANCEL",
+                                  lcd.RED if pct >= 10 else lcd.WHITE):
+            return
+
+        # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): relative timelock (BIP68) — เดิมไม่บอก เซ็นแล้วส่งไม่ออกโดยไม่รู้สาเหตุ
+        if info.get("rel_lock_blocks") or info.get("rel_lock_secs"):
+            body = ["A COIN CAN", "ONLY BE SPENT", "AFTER IT HAS"]
+            if info["rel_lock_blocks"]:
+                body.append("%s BLOCKS" % fmt_sat(info["rel_lock_blocks"]))
+            if info["rel_lock_secs"]:
+                body.append("%s MINUTES" % fmt_sat(info["rel_lock_secs"] // 60))
+            body.append("OF CONFIRMS")
+            self.message("REL LOCK", body, "A=NEXT  B=CANCEL", lcd.ORANGE)
+            if self.wait_key(("A", "CTRL", "B")) == "B":
+                return
 
         # ดูปลายทางทีละรายการ — ต้องกดผ่านให้ครบทุกอัน
         # 🔴 locktime: ถ้าไม่บอก ผู้ใช้จะเซ็นแล้วส่งไม่ออกโดยไม่รู้สาเหตุ (เพิ่ม 12 ก.ย. 2026)
@@ -1316,8 +1432,16 @@ class App:
             self.d.clear(lcd.BLACK)
             title = ("SELF %d/%d" if head == "SELF" else "TO %d/%d") % (i + 1, len(dests))
             y = self._chrome(title, "A=NEXT  B=CANCEL")
-            self.d.text_big("%s SAT" % fmt_sat(o["value"]), 6, y, lcd.YELLOW, 2)
-            y += 24
+            # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): เดิม "%s SAT" ยาวเกินจอตั้งแต่ 1,000 BTC → ตัวเลขตกขอบ
+            #    ต่ำกว่า 10 BTC 1 บรรทัดมีหน่วย · มากกว่านั้นเลข BTC บรรทัดหนึ่ง หน่วยอีกบรรทัด
+            t = fmt_amt(o["value"])
+            if t is not None:
+                self.d.text_big(t, 6, y, lcd.YELLOW, 2)
+                y += 24
+            else:
+                self.d.text_big(fmt_btc(o["value"]), 6, y, lcd.YELLOW, 2)
+                self.d.text_big("BTC", 6, y + 22, lcd.YELLOW, 2)
+                y += 46
             if o.get("odd_owned"):
                 self.d.text_big("! ODD PATH !", 6, y, lcd.ORANGE, 2)
                 y += 22
@@ -1328,7 +1452,10 @@ class App:
                 y += 22
             else:
                 y += 6
-            self.draw_addr(a, 6, y)
+            # ที่อยู่ยาว (bc1p 62 ตัว = 6 แถว) + ยอดเงิน 2 บรรทัด + แถบ TEST SEED อาจล้นแถบปุ่ม → บีบระยะแถว
+            rows = (len(a) + 11) // 12
+            step = min(24, max(18, (self._body_bottom - y) // max(1, rows)))
+            self.draw_addr(a, 6, y, step=step)
             self.d.show()
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return
@@ -1343,7 +1470,7 @@ class App:
         try:
             n = ps.sign(self.root, account=self.account)
         except Exception as e:
-            self.message("SIGN FAIL", [str(e)[:14]], "A=BACK", lcd.RED)
+            self.message("SIGN FAIL", wrap_text(e, 14, 7), "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
             return
         dt = time.ticks_diff(time.ticks_ms(), t0)
@@ -1461,17 +1588,24 @@ class App:
         self.screen_sign(data)
 
     def guard_usb(self):
-        """ปิดช่องข้อมูล USB ครั้งแรกที่เริ่มใส่ seed แล้วบอกผู้ใช้ครั้งเดียว"""
+        """ปิดช่องข้อมูล USB ครั้งแรกที่เริ่มใส่ seed แล้วบอกผู้ใช้ครั้งเดียว
+
+        คืน True = ปิดแล้ว ใส่ seed ต่อได้ · False = ปิดไม่สำเร็จ ห้ามใส่ seed
+        🔴 17 ต.ค. 2026 (รีวิวภายนอก): เดิมปิดไม่สำเร็จแค่เตือน "USB ON!" แล้วให้ใส่ seed ต่อ (fail open)
+           → เปลี่ยนเป็นไม่ให้ใส่ seed เลย (test seed ยังใช้ได้ ไม่ผ่านด่านนี้)
+        """
         if self.usb_off:
-            return
+            return True
         if usb_data_off():
             self.usb_off = True
             self.message("USB OFF", ["NO COMPUTER", "ACCESS NOW", "", "CHARGING OK", "",
                                           "POWER OFF TO", "RESTORE USB"], "A=OK")
-        else:
-            self.message("USB ON!", ["COULD NOT", "TURN OFF USB", "", "DO NOT PLUG", "INTO A", "COMPUTER"],
-                         "A=OK", lcd.ORANGE)
+            self.wait_key(("A", "CTRL"))
+            return True
+        self.message("USB ON!", ["COULD NOT", "TURN OFF USB", "", "SEED ENTRY", "BLOCKED", "",
+                                 "POWER OFF AND", "TRY AGAIN"], "A=BACK", lcd.RED)
         self.wait_key(("A", "CTRL"))
+        return False
 
     def screen_status(self):
         gc.collect()
@@ -1751,7 +1885,8 @@ class App:
                                 "A=SELECT")
                 if sel in (0, 1):
                     # ปิด USB ก่อนเริ่มทอยเต๋า/พิมพ์คำ/สแกน — คำอยู่ใน RAM ตั้งแต่ตอนกรอก ไม่ใช่แค่ตอนโหลดเสร็จ
-                    self.guard_usb()
+                    if not self.guard_usb():
+                        continue
                 if sel == 0:
                     self.screen_new_seed()
                 elif sel == 1:
