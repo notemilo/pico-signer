@@ -4,6 +4,15 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.19.0 — 2026-10-18
+Ideas taken from reading ShieldSigner's PSBT parser (3rdIteration's SeedSigner fork, MIT), rewritten for this code base.
+
+- An OP_RETURN output that carries value (burned coins) is refused.
+- Outputs below 546 sat get a warning screen (`TINY OUT`).
+- A fee rate of about 500 sat/vB or more gets a warning screen (`FEE RATE`); the size is estimated from the input
+  types (1 input, 2 outputs, p2wpkh = 141 vB).
+- The review checks that sent + change + fee equals the input total.
+
 ## 2.18.2 — 2026-10-17
 - A PSBT whose `PSBT_GLOBAL_VERSION` is not 0 is refused (BIP174). Found by an automated audit run shared by
   Crypto Guide.

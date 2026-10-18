@@ -310,6 +310,37 @@ def main():
             res.append("refused")
     check("v0 ผ่าน · v2 ปฏิเสธ · ยาวผิดปฏิเสธ %r" % res, res == ["ok", "refused", "refused"])
 
+    print("── 10. 18 ต.ค. 2026 แนวคิดจาก ShieldSigner: OP_RETURN มีเงิน · ฝุ่น · ค่าธรรมเนียมต่อไบต์ · ยอดรวม")
+    raw = build([(0, 5, 1_000_000)], [(b"\x6a\x04test", 1000, None), (ext(), 998_000, None)])
+    fr, signed = run(raw)
+    check("OP_RETURN แนบ 1,000 sat → REFUSED · BURNS · ไม่เซ็น",
+          signed is None and "OUTPUT BURNS" in body(fr, "REFUSED") and "REVIEW" not in titles(fr))
+    try:
+        P.PSBT.parse(raw).sign(ROOT, account=0)
+        check("sign() ตรง ๆ ก็ไม่เซ็น", False)
+    except P.PSBTError as e:
+        check("sign() ตรง ๆ ก็ไม่เซ็น: %s" % e, "OP_RETURN" in str(e))
+    raw = build([(0, 5, 1_000_000)], [(ext(), 500, None), (ext(1), 998_000, None)])
+    fr, signed = run(raw)
+    td = body(fr, "TINY OUT")
+    check("output 500 sat → TINY OUT เตือน (ยังเซ็นได้) %r" % td,
+          "500 SAT" in td and "BELOW 546 SAT" in td and signed is not None)
+    raw = build([(0, 5, 1_000_000)], [(ext(), 546, None), (ext(1), 998_000, None)])
+    check("546 sat พอดี → ไม่เตือน", "TINY OUT" not in titles(run(raw)[0]))
+    q = P.PSBT.parse(build([(0, 5, 1_000_000)], [(ext(), 300_000, None), chg(6, 699_000)]))
+    vs = P.estimate_vsize(q.tx, [q.input_script_pubkey(0)])
+    check("ขนาดโดยประมาณ 1 in 2 out p2wpkh = %d vB (จริง 141 — bitcoinjs ในรายงาน kkdao)" % vs, vs == 141)
+    info = q.describe(ROOT, account=0)
+    check("fee_rate = 1000 // 141 = %r" % info["fee_rate"], info["fee_rate"] == 7)
+    raw = build([(0, 5, 1_000_000)], [(ext(), 920_000, None)])         # ค่าธรรมเนียม 80,000 / ~110 vB
+    fr, signed = run(raw)
+    rate = body(fr, "FEE RATE")
+    check("ค่าธรรมเนียม 80,000 sat ใน ~110 vB → FEE RATE เตือน (ยังไม่เกินเพดาน 10%%) %r" % rate,
+          "727" in rate and "SAT/VB" in rate and signed is not None)
+    raw = build([(0, 5, 1_000_000)], [(ext(), 999_000, None)])
+    check("ค่าธรรมเนียมปกติ → ไม่มี FEE RATE / TINY OUT",
+          not {"FEE RATE", "TINY OUT"} & set(titles(run(raw)[0])))
+
     print("── 9. หน้า TO ที่อยู่ยาวสุด (bc1p) + ยอด 2 บรรทัด + แถบ TEST SEED ไม่ล้นแถบปุ่ม")
     tr = b"\x51\x20" + bytes(range(32))
     raw = build([(0, 5, 2_000_000_000)], [(tr, 1_999_000_000, None)])

@@ -129,6 +129,12 @@ build; the seed also lives in the Python heap, so anyone with SWD access can rea
 (physical access is out of scope, and disabling it on the RP2350 is permanent); RBF is not shown (only the key
 holder can sign a replacement); the transaction version is not shown.
 
+## Changed after reading ShieldSigner (2026-10-18, 2.19.0)
+
+From [3rdIteration/seedsigner](https://github.com/3rdIteration/seedsigner) `psbt_parser.py` (read, not run): refuse
+OP_RETURN outputs with value, warn on dust outputs (< 546 sat) and on fee rates of about 500 sat/vB or more, and
+check that sent + change + fee equals the input total.
+
 ## Known limitations (no need to report)
 
 - No PIN, no secure boot, no secure element.

@@ -90,6 +90,36 @@ CHANGE_INDEX_CAP = 100000     # เพดานเด็ดขาด เผื�
 MAX_FEE_PCT = 10
 
 
+# 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner psbt_parser.py · fork ของ SeedSigner โดย 3rdIteration/Crypto Guide)
+#    ค่าเดียวกับเขา: output ต่ำกว่า 546 sat = ฝุ่น (อาจไม่คุ้มค่าธรรมเนียมที่จะใช้ต่อ / ใช้ติดตามกระเป๋า)
+#    ค่าธรรมเนียมต่อไบต์ 500 sat/vB ขึ้นไป = เตือน (ค่าสำรองของเขาตอนไม่รู้สภาพเครือข่าย — เครื่องเราไม่ต่อเน็ต จึงใช้ค่าคงที่)
+DUST_SAT = 546
+HIGH_FEE_RATE = 500
+
+
+def estimate_vsize(tx, in_spks):
+    """ขนาดธุรกรรมหลังเซ็น (vbyte) โดยประมาณ — in_spks = script ของ input ทุกตัว (จาก tx เก่า)
+
+    witness ของ p2wpkh = 1 + (1+72) + (1+33) = 108 WU · taproot key path = 1 + 1 + 64 = 66 WU
+    p2pkh ใส่ scriptSig ~107 ไบต์ในส่วน non-witness · ชนิดอื่นเดาแบบ p2wpkh (ประมาณการ ไม่ใช่ค่าจริง)
+    """
+    base = len(tx.serialize(with_witness=False))
+    wu = base * 4
+    seg = False
+    for spk in in_spks:
+        if len(spk) == 25 and spk[:3] == b"\x76\xa9\x14":          # p2pkh
+            wu += 107 * 4
+        elif len(spk) == 34 and spk[:2] == b"\x51\x20":            # p2tr
+            wu += 66
+            seg = True
+        else:
+            wu += 108
+            seg = True
+    if seg:
+        wu += 2                                                    # segwit marker + flag
+    return (wu + 3) // 4
+
+
 def fee_over_cap(fee, total_out):
     """ค่าธรรมเนียมเกินเพดานไหม (ไม่รู้ค่าธรรมเนียม = ตัดสินที่นี่ไม่ได้ คืน False ให้ด่านอื่นปฏิเสธ)"""
     if fee is None:
@@ -683,6 +713,19 @@ class PSBT:
             })
 
         fee = None if unknown_in else total_in - sum(o.value for o in self.tx.vout)
+        # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): ยอดทุกก้อนต้องรวมกันได้ยอดเข้าพอดี
+        #    ตอนนี้ทุก output ตกเป็น CHG หรือ SEND อย่างเดียวเสมอ จึงจริงอยู่แล้ว — ใส่ไว้กันการแก้โค้ดวันหน้าทำให้ยอดหาย
+        if fee is not None and sending + change + fee != total_in:
+            raise PSBTError("AMOUNTS DO NOT ADD UP")
+        # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): OP_RETURN ใช้จ่ายต่อไม่ได้ เงินที่แนบไป = เผาทิ้ง
+        #    output ฝุ่น (ต่ำกว่า 546 sat) = เตือน · ค่าธรรมเนียมต่อไบต์สูงผิดปกติ = เตือน
+        op_return_sat = sum(o.value for o in self.tx.vout if o.script_pubkey[:1] == b"\x6a")
+        dust = [o["index"] for o in outs
+                if o["value"] < DUST_SAT and self.tx.vout[o["index"]].script_pubkey[:1] != b"\x6a"]
+        fee_rate = None
+        if fee is not None:
+            vsize = estimate_vsize(self.tx, [self.input_script_pubkey(n) for n in range(len(self.tx.vin))])
+            fee_rate = fee // vsize if vsize else None
 
         # 🔴 locktime: เดิมไม่เคยอ่านค่านี้เลย (เพิ่ม 12 ก.ย. 2026)
         #    ธุรกรรมระบุได้ว่า "ห้ามใช้ก่อนบล็อกที่ N" หรือ "ก่อนเวลา T"
@@ -729,6 +772,9 @@ class PSBT:
             "rel_lock_blocks": rel_blocks,
             "rel_lock_secs": rel_secs,
             "change_index": chg_idx,          # (chain, index) ของเงินทอนที่ไกลที่สุด · None = ไม่มีเงินทอน
+            "op_return_sat": op_return_sat,   # เงินที่แนบไปกับ OP_RETURN (> 0 = UI ไม่เซ็น)
+            "dust_outputs": dust,             # index ของ output ที่ต่ำกว่า DUST_SAT
+            "fee_rate": fee_rate,             # sat/vB โดยประมาณ (ปัดลง) · None = ไม่รู้ค่าธรรมเนียม
             "fee_over_cap": fee_over_cap(fee, sum(o.value for o in self.tx.vout)),
         }
 
@@ -746,6 +792,10 @@ class PSBT:
         # ด่านซ้ำของเพดานค่าธรรมเนียม — UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันอีกชั้น (fee() ไม่รู้ยอด = None ไปตกด่าน "ไม่มีจำนวนเงิน" ข้างล่าง)
         if fee_over_cap(self.fee(), sum(o.value for o in self.tx.vout)):
             raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
+        # 🔑 18 ต.ค. 2026: เงินที่แนบไปกับ OP_RETURN = เผาทิ้ง → ไม่เซ็น (UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันซ้ำ)
+        for o in self.tx.vout:
+            if o.script_pubkey[:1] == b"\x6a" and o.value > 0:
+                raise PSBTError("OP_RETURN BURNS %d SAT - not signed" % o.value)
         # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิม sign() ที่ถูกเรียกตรง ๆ เซ็น input ของเราได้ แม้ input อื่นไม่มี tx เก่า
         #    (= ไม่รู้ค่าธรรมเนียมจริง) · UI ปฏิเสธก่อนแล้ว แต่ตัวเซ็นต้องไม่พึ่งว่าใครเรียกอะไรก่อน
         for n in range(len(self.tx.vin)):

@@ -1355,6 +1355,12 @@ class App:
 
         # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): ปลายทางที่แปลงเป็นที่อยู่ไม่ได้ จอขึ้นแค่ "UNKNOWN SCRIPT 35B"
         #    ปลายทางคนละอันแต่หน้าจอเหมือนกัน = ผู้ใช้ตรวจไม่ได้ว่าเงินไปไหน → ไม่เซ็น
+        # 🔴 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): OP_RETURN ใช้ต่อไม่ได้ เงินที่แนบไป = เผาทิ้ง → ไม่เซ็น
+        if info.get("op_return_sat"):
+            t = fmt_amt(info["op_return_sat"]) or "A LOT"
+            self.message("REFUSED", ["OP_RETURN", "OUTPUT BURNS", t, "", "NOT SIGNED"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+            return
         odd = [o["index"] for o in info["outputs"] if o.get("unknown_script")]
         if odd:
             self.message("REFUSED", ["OUTPUT %d" % odd[0], "HAS A SCRIPT", "THIS DEVICE", "CANNOT SHOW", "",
@@ -1393,6 +1399,26 @@ class App:
         if not self.message_pages("REVIEW", lines, "A=NEXT  B=CANCEL",
                                   lcd.RED if pct >= 10 else lcd.WHITE):
             return
+
+        # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): คำเตือนที่ไม่ห้ามเซ็น แต่ผู้ใช้ควรรู้ก่อนกด
+        #    ค่าธรรมเนียมต่อไบต์สูงผิดปกติ — ร้อยละต่ำ (เช่นรวมเหรียญก้อนใหญ่) แต่จ่ายแพงเกินเหตุก็ได้
+        fr = info.get("fee_rate")
+        if fr is not None and fr >= P.HIGH_FEE_RATE:
+            frs = fmt_sat(fr) if fr <= 99999999 else "OVER 99999999"   # ห้ามเกิน 14 ตัว (message ตัด)
+            self.message("FEE RATE", ["FEE RATE IS", "ABOUT", frs, "SAT/VB", "",
+                                      "MUCH HIGHER", "THAN NORMAL"], "A=NEXT  B=CANCEL", lcd.ORANGE)
+            if self.wait_key(("A", "CTRL", "B")) == "B":
+                return
+        # output ต่ำกว่าค่าฝุ่น — อาจไม่คุ้มค่าธรรมเนียมที่จะใช้ต่อ หรือเป็นของที่ใช้ติดตามกระเป๋า
+        dust = info.get("dust_outputs") or []
+        if dust:
+            o = info["outputs"][dust[0]]
+            self.message("TINY OUT", ["OUTPUT %d IS" % o["index"], fmt_amt(o["value"]),
+                                         "BELOW %d SAT" % P.DUST_SAT, "", "MAY NOT BE", "WORTH SPENDING"]
+                         + (["(+%d MORE)" % (len(dust) - 1)] if len(dust) > 1 else []),
+                         "A=NEXT  B=CANCEL", lcd.ORANGE)
+            if self.wait_key(("A", "CTRL", "B")) == "B":
+                return
 
         # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): relative timelock (BIP68) — เดิมไม่บอก เซ็นแล้วส่งไม่ออกโดยไม่รู้สาเหตุ
         if info.get("rel_lock_blocks") or info.get("rel_lock_secs"):
