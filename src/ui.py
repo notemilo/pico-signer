@@ -1400,6 +1400,24 @@ class App:
                                   lcd.RED if pct >= 10 else lcd.WHITE):
             return
 
+        # 🔑 18 ต.ค. 2026 (แนวคิดจาก Specter-DIY): ยอดของแต่ละ input — เทียบกับกระเป๋าบนมือถือได้ทีละก้อน
+        #    ขึ้นเฉพาะเมื่อมีหลาย input หรือมี input คนอื่นปน (input เดียวของเรา = REVIEW บอกครบแล้ว ไม่เพิ่มหน้าให้กด)
+        det = info.get("inputs_detail") or []
+        if len(det) > 1 or info["inputs_mine"] != info["inputs"]:
+            il = []
+            for d in det:
+                lab = "#%d OTHER" % (d["index"] + 1)
+                if d["path"]:
+                    lab = "#%d %s" % (d["index"] + 1, "/".join(d["path"].rsplit("/", 2)[1:]))
+                    if len(lab) > AMT_COLS - 4:
+                        lab = "#%d MINE" % (d["index"] + 1)
+                try:
+                    il += amt_lines(lab, d["value"])
+                except AmountTooBig:
+                    il += [lab, "TOO BIG"]
+            if not self.message_pages("INPUTS", il, "A=NEXT  B=CANCEL"):
+                return
+
         # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): คำเตือนที่ไม่ห้ามเซ็น แต่ผู้ใช้ควรรู้ก่อนกด
         #    ค่าธรรมเนียมต่อไบต์สูงผิดปกติ — ร้อยละต่ำ (เช่นรวมเหรียญก้อนใหญ่) แต่จ่ายแพงเกินเหตุก็ได้
         fr = info.get("fee_rate")
@@ -1468,7 +1486,13 @@ class App:
                 self.d.text_big(fmt_btc(o["value"]), 6, y, lcd.YELLOW, 2)
                 self.d.text_big("BTC", 6, y + 22, lcd.YELLOW, 2)
                 y += 46
-            if o.get("odd_owned"):
+            if o.get("own_unhidden"):
+                # 18 ต.ค. 2026 (แนวคิดจาก Specter-DIY): มี input คนอื่นปน → เงินที่กลับมากระเป๋าเราไม่ซ่อนเป็น CHG
+                self.d.text_big("YOUR ADDRESS", 6, y, lcd.ORANGE, 2)
+                y += 22
+                self.d.text(("NOT HIDDEN: OTHER INPUTS " + (o["path"] or ""))[:29], 6, y, lcd.GREY)
+                y += 14
+            elif o.get("odd_owned"):
                 self.d.text_big("! ODD PATH !", 6, y, lcd.ORANGE, 2)
                 y += 22
                 self.d.text((o["path"] or "")[:29], 6, y, lcd.GREY)
@@ -1895,6 +1919,32 @@ class App:
         self.message("UNLOADED", ["SEED CLEARED", "", "POWER OFF =", "FULL WIPE"], "A=OK")
         self.wait_key(("A", "CTRL", "B"))
 
+    def scanner_boot_check(self):
+        """18 ต.ค. 2026 (รีวิวภายนอก ข้อ 5): ตรวจค่าตั้งสแกนเนอร์ตอนเปิดแอป แล้วจอดไว้ที่โหมดรอคำสั่ง
+
+        ค่าไม่ตรง = มีคนสแกน QR ตั้งค่าเครื่องใส่ (เช่นจอที่โดนเจาะโชว์แทรกตอนเราสแกน) → คืนค่าโรงงานแล้วบอก
+        """
+        f = getattr(scanner, "boot_check", None)
+        if f is None:
+            return None
+        try:
+            st, bad = f()
+        except Exception:
+            st, bad = "NO REPLY", []
+        if st == "RESET":
+            self.message("SCANNER", ["SETTINGS HAD", "BEEN CHANGED", "", "RESET TO", "FACTORY", "",
+                                     "A QR MAY HAVE", "CHANGED THEM"], "A=OK", lcd.ORANGE)
+            self.wait_key(("A", "CTRL"))
+        elif st == "BAD":
+            self.message("SCANNER", ["SETTINGS ARE", "WRONG AND", "COULD NOT", "BE RESET", "",
+                                     "QR MAY NOT", "WORK RIGHT"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+        elif st == "NO REPLY":
+            self.message("SCANNER", ["NO REPLY FROM", "SCANNER", "", "QR MAY NOT", "WORK", "",
+                                     "CHECK WIRING"], "A=OK", lcd.ORANGE)
+            self.wait_key(("A", "CTRL"))
+        return st
+
     def run(self):
         """เมนู 2 ชั้นแบบ Jade (ผู้ใช้ ออกแบบ 14 ก.ย. 2026)
 
@@ -1905,6 +1955,7 @@ class App:
                     Sign PSBT > From file (ใช้ทดสอบก่อนมีสแกนเนอร์)
         seed ทุกทางเป็น temporary — เครื่องไม่เก็บลงแฟลช
         """
+        self.scanner_boot_check()
         while True:
             if self.root is None:
                 sel = self.menu("START", ["New seed", "Existing seed", "Test seed", "Status"],

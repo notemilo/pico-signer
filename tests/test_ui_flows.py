@@ -652,6 +652,17 @@ for test_seed in (False, True):
           not OUT_OF_SCREEN)
 app.is_test = False
 
+# ═══ 18. 18 ต.ค. 2026 — ตรวจสแกนเนอร์ตอนเปิดแอป (รีวิวภายนอก ข้อ 5) ═══
+print("── 18. scanner_boot_check: OK เงียบ · RESET/BAD/NO REPLY ขึ้นจอ · ไม่มีฟังก์ชัน = ข้าม")
+app = new_app()
+for st, keys, want in ((("OK", []), [], None), (("RESET", [5]), ["A"], "BEEN CHANGED"),
+                       (("BAD", [5]), ["A"], "COULD NOT"), (("NO REPLY", []), ["A"], "CHECK WIRING")):
+    _sc.boot_check = (lambda st=st: st)
+    left = drive(app.scanner_boot_check, keys)
+    check("%s → %s" % (st[0], want or "ไม่ขึ้นจอ"), left == 0 and (seen(want) if want else not LOG))
+del _sc.boot_check
+check("โมดูลหลอกไม่มี boot_check → ข้าม ไม่พัง", drive(app.scanner_boot_check, []) == 0)
+
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:
     print("❌ ไม่ผ่าน %d ข้อ" % fails)

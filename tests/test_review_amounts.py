@@ -118,12 +118,17 @@ def build(ins, outs, version=2, sequence=0xFFFFFFFD, wu_tail=b""):
     p = P.PSBT()
     p.tx = txmod.Transaction(version=version)
     for n, (chain, idx, value) in enumerate(ins):
-        pth = apath(chain, idx)
-        pub = node(pth).pubkey
         p.tx.vin.append(txmod.TxInput(bytes([n + 1]) * 32, 0, sequence=sequence))
         m = P.KVMap()
-        m.put(bytes([P.IN_WITNESS_UTXO]), txmod.TxOutput(value, addr.p2wpkh_script(pub)).serialize())
-        m.put(bytes([P.IN_BIP32_DERIVATION]) + pub, origin(pth))
+        if chain == "other":                       # input ของคนอื่น (payjoin/coinjoin) — fp ของเขา
+            k = OTHER.derive_child(idx)
+            m.put(bytes([P.IN_WITNESS_UTXO]), txmod.TxOutput(value, addr.p2wpkh_script(k.pubkey)).serialize())
+            m.put(bytes([P.IN_BIP32_DERIVATION]) + k.pubkey, OTHER.my_fingerprint() + idx.to_bytes(4, "little"))
+        else:
+            pth = apath(chain, idx)
+            pub = node(pth).pubkey
+            m.put(bytes([P.IN_WITNESS_UTXO]), txmod.TxOutput(value, addr.p2wpkh_script(pub)).serialize())
+            m.put(bytes([P.IN_BIP32_DERIVATION]) + pub, origin(pth))
         p.inputs.append(m)
     for spk, value, pth in outs:
         p.tx.vout.append(txmod.TxOutput(value, spk))
@@ -340,6 +345,26 @@ def main():
     raw = build([(0, 5, 1_000_000)], [(ext(), 999_000, None)])
     check("ค่าธรรมเนียมปกติ → ไม่มี FEE RATE / TINY OUT",
           not {"FEE RATE", "TINY OUT"} & set(titles(run(raw)[0])))
+
+    print("── 11. 18 ต.ค. 2026 แนวคิดจาก Specter-DIY: หน้า INPUTS · มี input คนอื่นปน = ไม่ซ่อนเงินทอน")
+    raw = build([(0, 5, 1_000_000)], [(ext(), 300_000, None), chg(6, 699_000)])
+    check("input เดียวของเรา → ไม่มีหน้า INPUTS (ไม่เพิ่มหน้าให้กด)", "INPUTS" not in titles(run(raw)[0]))
+    raw = build([(0, 5, 1_000_000), (1, 3, 250_000_000)], [(ext(), 300_000, None), chg(6, 250_699_000)])
+    fr, signed = run(raw)
+    il = body(fr, "INPUTS")
+    check("2 input → หน้า INPUTS ยอดทีละก้อน + เลขที่อยู่ %r" % il,
+          il == ["#1 0/5", "1,000,000 SAT", "#2 1/3", "2.50000000 BTC"] and signed is not None)
+    raw = build([(0, 5, 1_000_000), ("other", 7, 2_000_000)],
+                [(ext(), 1_500_000, None), (ext(1), 800_000, None), chg(6, 699_000)])
+    fr, signed = run(raw)
+    rv = body(fr, "REVIEW")
+    to = [t for f in fr if f and f[0][0].startswith("TO ") for t, *_ in f]
+    check("input คนอื่นปน → CHG NONE · เงินทอนขึ้นหน้า TO ป้าย YOUR ADDRESS · INPUTS บอก #2 OTHER",
+          "CHG  NONE" in rv and "YOUR ADDRESS" in to and "TO 3/3" in titles(fr)
+          and "#2 OTHER" in body(fr, "INPUTS") and "IN 2 MINE 1" in rv)
+    info = P.PSBT.parse(raw).describe(ROOT, account=0)
+    check("describe: own_unhidden=True · is_change=False · ไม่ใช่ ODD PATH",
+          [(o["own_unhidden"], o["is_change"], o["odd_owned"]) for o in info["outputs"]][2] == (True, False, False))
 
     print("── 9. หน้า TO ที่อยู่ยาวสุด (bc1p) + ยอด 2 บรรทัด + แถบ TEST SEED ไม่ล้นแถบปุ่ม")
     tr = b"\x51\x20" + bytes(range(32))

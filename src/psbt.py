@@ -663,6 +663,7 @@ class PSBT:
         inputs_mine = 0
         input_accounts = []
         inputs_wrong_account = 0
+        inputs_detail = []
         for n in range(len(self.tx.vin)):
             a = self.input_amount(n)
             if a is None:
@@ -671,6 +672,9 @@ class PSBT:
                 total_in += a
             decl = [path for _pub, (fp, path) in self.derivations(self.inputs[n], IN_BIP32_DERIVATION).items()
                     if fp == fp_root]
+            # 🔑 18 ต.ค. 2026 (แนวคิดจาก Specter-DIY หน้ารายละเอียด input): ยอดของแต่ละ input + ของเราไหม
+            #    เส้นทางที่อ้าง fp เรา ผ่าน _check_claims มาแล้ว = จริง (โกหก = PSBTLie ไปก่อนถึงตรงนี้)
+            inputs_detail.append({"index": n, "value": a, "path": path_str(decl[0]) if decl else None})
             if decl:
                 inputs_mine += 1
                 ia = _bip84_account(decl[0])
@@ -693,8 +697,14 @@ class PSBT:
             is_change = any(self._is_change_path(pth, max_in_idx, acct)
                             and o.script_pubkey == addr.p2wpkh_script(_pub)
                             for _pub, pth, _node in owned)
+            # 🔑 18 ต.ค. 2026 (แนวคิดจาก Specter-DIY UNVERIFIED_CHANGE_WARNING): มี input ที่ seed นี้เซ็นไม่ได้ปน
+            #    (payjoin/coinjoin) = พิสูจน์ไม่ได้ว่าเป็น "เงินทอน" ในความหมายบัญชี → ไม่ซ่อน ให้ขึ้นจอพร้อมป้าย YOUR ADDRESS
+            own_unhidden = False
+            if is_change and inputs_signable < len(self.tx.vin):
+                is_change = False
+                own_unhidden = True
             # ของเราแต่เส้นทางแปลก = ถือเป็นการจ่ายออก แต่ติดธงไว้ให้จอเตือนได้
-            odd_owned = bool(owned) and not is_change
+            odd_owned = bool(owned) and not is_change and not own_unhidden
             if is_change:
                 change += o.value
             else:
@@ -709,6 +719,7 @@ class PSBT:
                 "value": o.value,
                 "is_change": is_change,
                 "odd_owned": odd_owned,
+                "own_unhidden": own_unhidden,
                 "path": path_str(owned[0][1]) if owned else None,
             })
 
@@ -769,6 +780,7 @@ class PSBT:
             "locktime_is_time": lt >= 500000000,
             "locktime_no_effect": lt > 0 and all(q == 0xFFFFFFFF for q in seqs),
             "rbf": any(q < 0xFFFFFFFE for q in seqs),
+            "inputs_detail": inputs_detail,   # [{index, value, path (str) หรือ None = ไม่ใช่ของเรา}]
             "rel_lock_blocks": rel_blocks,
             "rel_lock_secs": rel_secs,
             "change_index": chg_idx,          # (chain, index) ของเงินทอนที่ไกลที่สุด · None = ไม่มีเงินทอน

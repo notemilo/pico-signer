@@ -67,8 +67,9 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 - **No PIN:** whoever holds the device while a seed is loaded can use it.
 - **No secure boot:** someone with physical access can reflash the device. The firmware hash (below) covers MicroPython and the C modules only; the app's `.py` files live on the filesystem.
 - The scanner's light cannot be switched off in software and it draws most of the power (~120 of ~133 mA).
-- The scanner module's firmware is trusted with the seed (a SeedQR scan passes through it), and it obeys its
-  vendor's configuration QR codes.
+- The scanner module's firmware is trusted with the seed (a SeedQR scan passes through it). It obeys its vendor's
+  configuration QR codes; the app limits this by keeping the module in command mode (decoding nothing) outside the
+  scan screens, and by checking its settings at start-up and restoring factory settings if they were changed.
 - Anyone who has the device while it is off can hold **B** at power-on and replace the app over USB.
 
 ## Firmware

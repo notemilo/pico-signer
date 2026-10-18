@@ -33,8 +33,10 @@ Out of scope / accepted:
   cable and a minute they can replace the app. The Status screen shows build metadata from `coreid.py`; it does not
   verify the installed app.
 - The barcode scanner module's own firmware. It is trusted with the seed: scanning a SeedQR passes the whole seed
-  through it. It also obeys its vendor's configuration QR codes (enabled by default), so a malicious screen could
-  change its settings during a scan; no fund-loss path is known and there is no proven fix in software.
+  through it. It also obeys its vendor's configuration QR codes (enabled by default; they cannot be disabled over
+  UART). Since 2.20.0 the module is kept in command mode outside scan screens and its settings are checked at
+  start-up (factory restore if changed), so a configuration QR can only act during a scan and is undone at the next
+  start. No fund-loss path is known.
 
 ## Where to look (highest value first)
 
@@ -134,6 +136,12 @@ holder can sign a replacement); the transaction version is not shown.
 From [3rdIteration/seedsigner](https://github.com/3rdIteration/seedsigner) `psbt_parser.py` (read, not run): refuse
 OP_RETURN outputs with value, warn on dust outputs (< 546 sat) and on fee rates of about 500 sat/vB or more, and
 check that sent + change + fee equals the input total.
+
+## Changed after reading Specter-DIY (2026-10-18, 2.20.0)
+
+From [cryptoadvance/specter-diy](https://github.com/cryptoadvance/specter-diy) (read, not run): scanner control over
+UART (settings check and command mode, see the threat model above), not hiding change when inputs this seed cannot
+sign are present, and a per-input screen.
 
 ## Known limitations (no need to report)
 

@@ -4,6 +4,23 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.20.0 — 2026-10-18
+Ideas taken from reading Specter-DIY (cryptoadvance/specter-diy, MIT), rewritten for this code base. Closes point 5
+of GHSA-334h-x4f4-34h3 as far as the scanner allows.
+
+- **The scanner is now controlled over UART** (the 7E 00 command protocol from Waveshare's manual, Appendix D, the
+  same family as the GM65 used by Specter-DIY):
+  - at start-up its settings are read and compared with the expected values; if a configuration QR has changed them,
+    the module is restored to factory settings and a warning is shown
+  - outside the scan screens it is put in command mode, where it decodes nothing, so configuration QRs can only be
+    read while a scan screen is open
+  - nothing is saved to the module; a power cycle always brings back its stored settings
+  - the blue ring light cannot be switched off this way
+- With inputs this seed cannot sign (payjoin/coinjoin), outputs back to this wallet are no longer hidden as change;
+  they are shown as destinations marked `YOUR ADDRESS`.
+- New `INPUTS` screen with each input's amount and path (or `OTHER`), shown when there is more than one input or a
+  foreign input.
+
 ## 2.19.0 — 2026-10-18
 Ideas taken from reading ShieldSigner's PSBT parser (3rdIteration's SeedSigner fork, MIT), rewritten for this code base.
 
