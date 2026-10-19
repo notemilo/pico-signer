@@ -243,6 +243,7 @@ def main():
           rv[:2] == ["SEND", "300,000 SAT"] and rv[3] == "1,000 SAT" and "CHG 1/150" in rv
           and "699,000 SAT" in rv and rv[-1] == "IN 1  ACCT 0")
     check("หน้าเดียวพอ (ไม่ต้องกดเพิ่ม)", titles(fr).count("REVIEW") == 1)
+    check("บอก sat/vB โดยประมาณ (1,000 / 141 vB = ~7) — แนวคิดจาก Krux", "~7 SAT/VB" in rv)
     fr, _ = run(raw, is_test=True)
     check("มีแถบ TEST SEED: บรรทัดครบเท่าเดิม", body(fr, "REVIEW") == rv)
     FRAMES.clear()

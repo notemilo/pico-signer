@@ -529,6 +529,8 @@ class App:
             elif key == "Y":
                 if self.confirm("QUIT?", ["ROLLS WILL BE", "LOST", "", "ARE YOU SURE?"]):
                     return
+        # ⛔ 19 ต.ค. 2026: เคยลองใส่หน้าเตือน "ผลทอยดูไม่สุ่ม" (แนวคิดจาก Krux) แล้วเอาออกตาม ผู้ใช้:
+        #    "ทอยเต๋าจริงแล้วกรอก = สุ่มจริง ไม่ควรมีการเตือน เตือนแล้วคนทอยจะไม่มั่นใจ" — ห้ามใส่กลับ
         # แปลงเป็นคำ — ใช้เส้นทางเดียวกับที่เทียบตารางกระดาษไว้แล้ว
         rolls = [1 if b else 2 for b in bits]
         mn, cands = dice.build_mnemonic(rolls, WL)
@@ -1380,6 +1382,9 @@ class App:
         try:
             lines = amt_lines("SEND", send)
             lines += amt_lines(("! FEE %s !" if pct >= 10 else "FEE %s") % pct_str(fee, base), fee)
+            # 🔑 19 ต.ค. 2026 (แนวคิดจาก Krux psbt._get_resume_fee): บอก sat/vB โดยประมาณ — เทียบกับที่ตั้งในกระเป๋าได้ทันที
+            if info.get("fee_rate") is not None and info["fee_rate"] <= 99999999:
+                lines.append("~%s SAT/VB" % fmt_sat(info["fee_rate"]))
             ci = info.get("change_index")
             if info["change"] and ci is not None:
                 lines += amt_lines("CHG %d/%d" % ci, info["change"])

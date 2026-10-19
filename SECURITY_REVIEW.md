@@ -143,6 +143,12 @@ From [cryptoadvance/specter-diy](https://github.com/cryptoadvance/specter-diy) (
 UART (settings check and command mode, see the threat model above), not hiding change when inputs this seed cannot
 sign are present, and a per-input screen.
 
+## Changed after reading Krux (2026-10-19, 2.21.0)
+
+From [selfcustody/krux](https://github.com/selfcustody/krux) (read, not run): the fee rate on the review screen.
+Dice rolls are deliberately not judged: real dice entered as rolled are random, and a "does not look random"
+warning would only make the person rolling doubt a correct result.
+
 ## Known limitations (no need to report)
 
 - No PIN, no secure boot, no secure element.

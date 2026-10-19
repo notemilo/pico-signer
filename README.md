@@ -41,7 +41,7 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 
 ## Features
 
-- **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator · optional word-by-word quiz against the paper backup before the seed is used
+- **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator · every word can be checked on paper: see [DICE.md](DICE.md) (roll sheet and 2,048-word table included) · optional word-by-word quiz against the paper backup before the seed is used
 - Load seed by typing words or scanning **SeedQR** (Standard and Compact)
 - Optional BIP39 passphrase typed on a full on-screen keyboard (spaces drawn as grey boxes; fingerprint shown before → after) · BIP84 accounts (`m/84h/0h/<n>h`)
 - **Export xpub** as BBQr (Coldcard Generic JSON)

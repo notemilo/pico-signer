@@ -4,6 +4,12 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.21.0 — 2026-10-19
+- The review screen shows the approximate fee rate (`~N SAT/VB`), an idea from Krux (selfcustody/krux).
+- New [DICE.md](DICE.md) (and Thai [DICE.th.md](DICE.th.md)): how to make a seed with dice on this device, with a
+  printable roll sheet (12 and 24 words) and the 2,048-word table (odd = 1, even = 0), checked row by row against the
+  device's own code (`tests/test_dice_docs.py`).
+
 ## 2.20.0 — 2026-10-18
 Ideas taken from reading Specter-DIY (cryptoadvance/specter-diy, MIT), rewritten for this code base. Closes point 5
 of GHSA-334h-x4f4-34h3 as far as the scanner allows.

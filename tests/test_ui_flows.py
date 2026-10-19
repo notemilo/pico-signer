@@ -663,6 +663,12 @@ for st, keys, want in ((("OK", []), [], None), (("RESET", [5]), ["A"], "BEEN CHA
 del _sc.boot_check
 check("โมดูลหลอกไม่มี boot_check → ข้าม ไม่พัง", drive(app.scanner_boot_check, []) == 0)
 
+# ═══ 19. 19 ต.ค. 2026 — ผลทอยเต๋าไม่มีหน้าเตือนใด ๆ (ผู้ใช้: ทอยจริง = สุ่มจริง ไม่ควรเตือน) ═══
+print("── 19. dice: กดปุ่มเดิมครบ 128 ครั้ง → ไม่มีหน้าเตือน ไปหน้าคำสุดท้ายตามปกติ")
+app = new_app()
+drive(lambda: app.screen_dice(12), ["A"] * 128)
+check("ไม่มี ROLLS? / LOOK RANDOM · ถึงหน้า WORD 12", not seen("LOOK RANDOM") and seen("WORD 12"))
+
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:
     print("❌ ไม่ผ่าน %d ข้อ" % fails)
