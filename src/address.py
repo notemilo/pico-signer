@@ -40,6 +40,35 @@ def p2wpkh_script_code(pubkey):
 
 # ---------- แปลงเป็นที่อยู่ ----------
 
+def witness_program(spk):
+    """(เวอร์ชัน, program) ถ้า spk มีรูปแบบ witness program ตาม BIP141 · ไม่ใช่ = (None, None)
+
+    รูปแบบ: <OP_0 หรือ OP_1..OP_16> <push 2-40 ไบต์> แล้วจบพอดี
+    """
+    if 4 <= len(spk) <= 42:
+        ver = spk[0]
+        if ver == 0x00 or 0x51 <= ver <= 0x60:
+            prog = spk[2:]
+            if spk[1] == len(prog) and 2 <= len(prog) <= 40:
+                return (0 if ver == 0 else ver - 0x50), prog
+    return None, None
+
+
+def is_unassigned_witness(spk):
+    """witness program ที่ยังไม่มีกฎการใช้จ่าย = ใครก็หยิบเงินไปได้ (เท่ากับเผาทิ้ง)
+
+    🔴 21 ต.ค. 2026 (ตรวจโค้ดเอง): เดิมจอโชว์เป็นที่อยู่ bc1z… / bc1p… ดูปกติ และเครื่องยอมเซ็น
+       ทั้งที่ OP_RETURN ที่มีเงินแนบ (เผาเงินแบบเดียวกัน) เราปฏิเสธอยู่แล้ว
+       v0 ต้องยาว 20/32 ไบต์ — ยาวอื่นเป็น script ผิดรูป ตกไปเป็น UNKNOWN SCRIPT อยู่แล้ว
+       v1 32 ไบต์ = taproot (ใช้งานจริง) · v1 ยาวอื่น และ v2-v16 = ยังไม่มีเจ้าของ (BIP141/BIP341)
+       รวมถึง P2A (v1 2 ไบต์ "bc1pfeessrawgf") ที่ตั้งใจให้ใครก็ใช้ได้
+    """
+    ver, prog = witness_program(spk)
+    if ver is None or ver == 0:
+        return False
+    return not (ver == 1 and len(prog) == 32)
+
+
 def script_to_address(spk, testnet=False):
     """คืนที่อยู่ หรือคำอธิบายถ้าเป็นสคริปต์ที่ไม่รู้จัก"""
     net = TESTNET if testnet else MAINNET
@@ -54,17 +83,9 @@ def script_to_address(spk, testnet=False):
         return base58.encode_check(bytes([net["p2sh"]]) + spk[2:22])
 
     # segwit: <version> <push len> <program>
-    if 4 <= len(spk) <= 42:
-        ver = spk[0]
-        if ver == 0x00 or 0x51 <= ver <= 0x60:
-            witver = 0 if ver == 0 else ver - 0x50
-            plen = spk[1]
-            prog = spk[2:]
-            if plen == len(prog) and 2 <= len(prog) <= 40:
-                if witver == 0 and len(prog) not in (20, 32):
-                    pass
-                else:
-                    return bech32.encode_segwit(net["bech32"], witver, prog)
+    witver, prog = witness_program(spk)
+    if witver is not None and not (witver == 0 and len(prog) not in (20, 32)):
+        return bech32.encode_segwit(net["bech32"], witver, prog)
 
     # ⚠️ ข้อความนี้ขึ้นจอเครื่องเซ็นตรง ๆ — ต้องเป็น ASCII (ฟอนต์บนเครื่องไม่มีภาษาไทย ขึ้นเป็น ???)
     #    แก้ 12 ต.ค. 2026 · เดิมเป็นภาษาไทย ผู้ใช้จะเห็นแค่ ???? บนหน้า TO

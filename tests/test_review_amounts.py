@@ -375,6 +375,60 @@ def main():
     ys = [y for t, x, y, sc in to[0][1:] if sc == 2 and t not in ("A=NEXT B=CANCEL",) and y < 210]
     check("ข้อความล่างสุด y=%d + สูง 17 <= แถบปุ่ม 218" % max(ys), max(ys) + 17 <= 218)
 
+    print("── 12. 21 ต.ค. 2026 ตรวจโค้ดเอง: ส่งไปที่อยู่แบบที่ยังไม่มีเจ้าของ (bc1z… / bc1p ไม่ใช่ taproot) = ไม่เซ็น")
+    for name, spk in (("v2", b"\x52\x20" + bytes(range(32))), ("v1 20B", b"\x51\x14" + bytes(range(20))),
+                      ("P2A", b"\x51\x02\x4e\x73")):
+        raw = build([(0, 5, 1_000_000)], [(spk, 300_000, None), chg(6, 699_000)])
+        fr, signed = run(raw)
+        rf = body(fr, "REFUSED")
+        check("%s → REFUSED ไม่มีหน้า TO ไม่เซ็น · ยอดบนจอ %r" % (name, rf),
+              signed is None and "TO 1/1" not in titles(fr) and "NOT IN USE YET" in rf and "300,000 SAT" in rf)
+    raw = build([(0, 5, 1_000_000)], [(b"\x51\x20" + bytes(range(32)), 300_000, None), chg(6, 699_000)])
+    fr, signed = run(raw)
+    check("taproot ปกติ (v1 32 ไบต์) ยังเซ็นได้", signed is not None and "REFUSED" not in titles(fr))
+
+    print("── 13. 21 ต.ค. 2026 ตรวจโค้ดเอง: บรรทัด IN/MINE/ACCT ยาวเกิน 14 ตัวต้องไม่โดนตัด (เคยขึ้น ACCT 1 แทน 10)")
+
+    def build_many(n_mine, n_other, acct, value=200_000):
+        """input ของเรา n_mine ก้อนใน account acct + ของคนอื่น n_other ก้อน → จ่ายออกที่เดียว ค่าธรรมเนียม 3,000"""
+        p = P.PSBT()
+        p.tx = txmod.Transaction(version=2)
+        for n in range(n_mine + n_other):
+            p.tx.vin.append(txmod.TxInput(bytes([n & 0xFF, n >> 8]) + b"\x07" * 30, 0, sequence=0xFFFFFFFD))
+            m = P.KVMap()
+            if n < n_mine:
+                pth = (84 + H, H, acct + H, 0, n)
+                k, fp = node(pth), FP
+            else:
+                pth = (n,)
+                k, fp = OTHER.derive_child(n), OTHER.my_fingerprint()
+            m.put(bytes([P.IN_WITNESS_UTXO]), txmod.TxOutput(value, addr.p2wpkh_script(k.pubkey)).serialize())
+            m.put(bytes([P.IN_BIP32_DERIVATION]) + k.pubkey, fp + b"".join(i.to_bytes(4, "little") for i in pth))
+            p.inputs.append(m)
+        p.tx.vout.append(txmod.TxOutput((n_mine + n_other) * value - 3_000, ext()))
+        p.outputs.append(P.KVMap())
+        return attach_prev(p).serialize()
+
+    def run_acct(raw, acct):
+        FRAMES.clear()
+        app = ui.App()
+        app.root, app.account, app.is_test = ROOT, acct, False
+        app.wait_key = lambda *a, **k: "A"
+        out = []
+        app.show_bbqr = lambda raw, *a: out.append(raw)
+        app.screen_sign(raw)
+        return list(FRAMES), (out[0] if out else None)
+
+    for n_mine, n_other, acct, want in ((1, 0, 0, ["IN 1  ACCT 0"]),
+                                        (100, 0, 2, ["IN 100  ACCT 2"]),
+                                        (100, 0, 10, ["IN 100", "ACCT 10"]),
+                                        (101, 1, 15, ["IN 102", "MINE 101", "ACCT 15"])):
+        fr, signed = run_acct(build_many(n_mine, n_other, acct), acct)
+        rv = body(fr, "REVIEW")
+        got = [ln for ln in rv if ln.startswith(("IN ", "MINE ", "ACCT "))]
+        check("input %d ของเรา + %d คนอื่น · account %d → %r" % (n_mine, n_other, acct, got),
+              got == want and signed is not None)
+
     print()
     if fails:
         print("❌ ไม่ผ่าน %d ข้อ" % fails)

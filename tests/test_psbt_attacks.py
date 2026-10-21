@@ -481,6 +481,42 @@ def main():
     print("28. export_signed             : %d → %d ไบต์ · เก็บลายเซ็น+witness utxo %s · ไม่มี witness utxo = เก็บ tx เก่า %s  %s"
           % (len(p.serialize()), len(p.export_signed()), ok1, ok2, "ผ่าน" if ok else "ไม่ผ่าน"))
 
+    # 29) 21 ต.ค. 2026 (ตรวจโค้ดเอง): ปลายทางเป็นที่อยู่แบบที่ยังไม่มีกฎใช้จ่าย (witness v2-v16 / v1 ไม่ใช่ 32 ไบต์)
+    #     ใครก็หยิบเงินไปได้ = เผาทิ้งแบบ OP_RETURN · เดิมจอโชว์ bc1z…/bc1p… ปกติและเซ็นให้
+    #     ต้องปฏิเสธเมื่อมีเงินแนบ · taproot (v1 32 ไบต์) และ v0 ยังเซ็นได้ · ยอด 0 ไม่ปฏิเสธ (ไม่มีเงินหาย เหมือน OP_RETURN)
+    dest = [o["index"] for o in psbt.PSBT.parse(RAW).describe(ROOT)["outputs"] if not o["is_change"]][0]
+    p20, p32, p40 = bytes(range(1, 21)), bytes(range(1, 33)), bytes(range(1, 41))
+    cases = (("v2 32B", b"\x52\x20" + p32, True), ("v16 40B", b"\x60\x28" + p40, True),
+             ("v1 20B", b"\x51\x14" + p20, True), ("P2A", b"\x51\x02\x4e\x73", True),
+             ("taproot", b"\x51\x20" + p32, False), ("v0 20B", b"\x00\x14" + p20, False),
+             ("v0 32B", b"\x00\x20" + p32, False))
+    res = []
+    ok = True
+    for name, spk, bad in cases:
+        ps = psbt.PSBT.parse(RAW)
+        ps.tx.vout[dest].script_pubkey = spk
+        ps = fix_tx(ps)
+        info = ps.describe(ROOT)
+        flagged = info["outputs"][dest]["anyone_can_spend"] and info["anyone_can_spend_sat"] > 0
+        try:
+            ps.sign(ROOT); refused = False
+        except psbt.PSBTError:
+            refused = True
+        ok = ok and flagged == bad and refused == bad and addr.is_unassigned_witness(spk) == bad
+        res.append("%s %s" % (name, "ไม่เซ็น" if refused else "เซ็น"))
+    # ยอด 0 ไปที่อยู่แบบนี้ = ไม่มีเงินหาย → ไม่ติดด่าน (ย้ายยอดเดิมของ output นั้นไปรวมกับเงินทอน ค่าธรรมเนียมจึงเท่าเดิม)
+    ps = psbt.PSBT.parse(RAW)
+    chg = [o["index"] for o in ps.describe(ROOT)["outputs"] if o["is_change"]][0]
+    ps.tx.vout[chg].value += ps.tx.vout[dest].value
+    ps.tx.vout[dest].script_pubkey = b"\x52\x20" + p32
+    ps.tx.vout[dest].value = 0
+    ps = fix_tx(ps)
+    zero_ok = ps.describe(ROOT)["anyone_can_spend_sat"] == 0
+    ok = ok and zero_ok
+    fails += not ok
+    print("29. ที่อยู่แบบยังไม่มีเจ้าของ     : %s · ยอด 0 ไม่ติดด่าน %s  %s"
+          % (" | ".join(res), zero_ok, "ผ่าน" if ok else "ไม่ผ่าน"))
+
     print()
     if fails:
         print("ไม่ผ่าน %d ข้อ" % fails); sys.exit(1)

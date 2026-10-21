@@ -4,6 +4,18 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.21.1 — 2026-10-21
+Found in a self-review of the code.
+
+- **Value sent to an address type with no spending rules yet is refused.** Witness versions 2–16, and version 1
+  programs that are not 32 bytes (taproot), were shown as normal-looking `bc1z…` / `bc1p…` addresses and signed.
+  Until a soft fork defines them, anyone could take coins sent there, so this is burning coins like an OP_RETURN
+  with value, which was already refused. Taproot and v0 addresses are unchanged; a 0-value output is still allowed.
+- The review screen no longer cuts the input count or account: with 100 or more inputs, `IN n  ACCT a` (or
+  `IN n MINE m`) longer than 14 characters showed `ACCT 1` for account 10. It is now split over two lines when it
+  does not fit. Amounts were never affected, and inputs from another account were already refused.
+- README: new "Design principle" section (simple, but only as simple as safety allows).
+
 ## 2.21.0 — 2026-10-19
 - The review screen shows the approximate fee rate (`~N SAT/VB`), an idea from Krux (selfcustody/krux).
 - New [DICE.md](DICE.md) (and Thai [DICE.th.md](DICE.th.md)): how to make a seed with dice on this device, with a

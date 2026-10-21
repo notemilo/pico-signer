@@ -716,6 +716,8 @@ class PSBT:
                 # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): ปลายทางที่แปลงเป็นที่อยู่ไม่ได้ จอขึ้นแค่ขนาด script
                 #    = ปลายทางต่างกันแต่หน้าจอเหมือนกัน → UI ปฏิเสธไม่เซ็น
                 "unknown_script": a.startswith("UNKNOWN SCRIPT"),
+                # 🔴 21 ต.ค. 2026: ที่อยู่แบบที่ยังไม่มีกฎใช้จ่าย (witness v2-v16 / v1 ไม่ใช่ taproot) = ใครก็หยิบได้
+                "anyone_can_spend": addr.is_unassigned_witness(o.script_pubkey),
                 "value": o.value,
                 "is_change": is_change,
                 "odd_owned": odd_owned,
@@ -731,6 +733,8 @@ class PSBT:
         # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): OP_RETURN ใช้จ่ายต่อไม่ได้ เงินที่แนบไป = เผาทิ้ง
         #    output ฝุ่น (ต่ำกว่า 546 sat) = เตือน · ค่าธรรมเนียมต่อไบต์สูงผิดปกติ = เตือน
         op_return_sat = sum(o.value for o in self.tx.vout if o.script_pubkey[:1] == b"\x6a")
+        # 🔴 21 ต.ค. 2026: เงินที่ส่งไปที่อยู่แบบที่ยังไม่มีเจ้าของ = เผาเหมือน OP_RETURN (ดู address.is_unassigned_witness)
+        anyone_sat = sum(o["value"] for o in outs if o["anyone_can_spend"])
         dust = [o["index"] for o in outs
                 if o["value"] < DUST_SAT and self.tx.vout[o["index"]].script_pubkey[:1] != b"\x6a"]
         fee_rate = None
@@ -785,6 +789,7 @@ class PSBT:
             "rel_lock_secs": rel_secs,
             "change_index": chg_idx,          # (chain, index) ของเงินทอนที่ไกลที่สุด · None = ไม่มีเงินทอน
             "op_return_sat": op_return_sat,   # เงินที่แนบไปกับ OP_RETURN (> 0 = UI ไม่เซ็น)
+            "anyone_can_spend_sat": anyone_sat,  # เงินที่ส่งไปที่อยู่แบบที่ยังไม่มีเจ้าของ (> 0 = UI ไม่เซ็น)
             "dust_outputs": dust,             # index ของ output ที่ต่ำกว่า DUST_SAT
             "fee_rate": fee_rate,             # sat/vB โดยประมาณ (ปัดลง) · None = ไม่รู้ค่าธรรมเนียม
             "fee_over_cap": fee_over_cap(fee, sum(o.value for o in self.tx.vout)),
@@ -805,9 +810,13 @@ class PSBT:
         if fee_over_cap(self.fee(), sum(o.value for o in self.tx.vout)):
             raise PSBTError("FEE OVER %d%% - not signed" % MAX_FEE_PCT)
         # 🔑 18 ต.ค. 2026: เงินที่แนบไปกับ OP_RETURN = เผาทิ้ง → ไม่เซ็น (UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันซ้ำ)
+        import address as addr
         for o in self.tx.vout:
             if o.script_pubkey[:1] == b"\x6a" and o.value > 0:
                 raise PSBTError("OP_RETURN BURNS %d SAT - not signed" % o.value)
+            # 🔴 21 ต.ค. 2026: ที่อยู่แบบที่ยังไม่มีเจ้าของ = ใครก็หยิบได้ → ไม่เซ็น (UI ปฏิเสธก่อนแล้ว ตัวเซ็นกันซ้ำ)
+            if o.value > 0 and addr.is_unassigned_witness(o.script_pubkey):
+                raise PSBTError("UNUSED ADDRESS TYPE - anyone could take %d SAT - not signed" % o.value)
         # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิม sign() ที่ถูกเรียกตรง ๆ เซ็น input ของเราได้ แม้ input อื่นไม่มี tx เก่า
         #    (= ไม่รู้ค่าธรรมเนียมจริง) · UI ปฏิเสธก่อนแล้ว แต่ตัวเซ็นต้องไม่พึ่งว่าใครเรียกอะไรก่อน
         for n in range(len(self.tx.vin)):

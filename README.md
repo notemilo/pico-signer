@@ -39,6 +39,14 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
 <br><sub>Left: all parts and the case · Middle: scanner wired to the Pico 2 (power, ground, UART TX/RX) · Right: Pico 2 under a clear cover</sub>
 </p>
 
+## Design principle
+
+Simple, but only as simple as safety allows.
+
+- Every feature must be needed to make a seed or sign a transaction. Anything else stays out.
+- Safety checks are never removed to keep the code small. The device does fewer things, and checks each one strictly.
+- If you can't check it yourself, it doesn't go in.
+
 ## Features
 
 - **New seed from dice only** (12 or 24 words) — never uses the chip's random number generator · every word can be checked on paper: see [DICE.md](DICE.md) (roll sheet and 2,048-word table included) · optional word-by-word quiz against the paper backup before the seed is used
@@ -60,6 +68,7 @@ Boot, status screen, dice entry, word entry and the SeedQR scan prompt (no seed 
   - any key-origin claim about this seed that proves false: a derivation with this seed's fingerprint whose key does not derive, an output that claims this seed but pays elsewhere, or an output that pays this seed while naming another fingerprint (shown as `PSBT LIES`)
   - more than one BIP32 derivation in a single input or output (single-sig only), or a sighash type other than `SIGHASH_ALL`
   - an output script the screen cannot show as an address (OP_RETURN is shown and allowed, but not with value attached), or an amount too large to show in full
+  - value sent to an address type that has no spending rules yet (witness v2–v16, or v1 that is not a 32-byte taproot key, such as `bc1z…` or the anchor `bc1pfeessrawgf`): anyone could take it
 - **Warnings (signing still allowed):** outputs below 546 sat, and a fee rate of about 500 sat/vB or more.
 - **Review screen:** every amount is shown in full on its own line (sat below 1 BTC, BTC above) with the fee as a
   percentage; change shows its chain and highest index; nLockTime and relative timelocks (BIP68) get their own screen.

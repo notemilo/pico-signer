@@ -1363,6 +1363,15 @@ class App:
             self.message("REFUSED", ["OP_RETURN", "OUTPUT BURNS", t, "", "NOT SIGNED"], "A=BACK", lcd.RED)
             self.wait_key(("A", "CTRL"))
             return
+        # 🔴 21 ต.ค. 2026 (ตรวจโค้ดเอง): ที่อยู่แบบที่บิตคอยน์ยังไม่เปิดใช้ (bc1z… / bc1p ที่ไม่ใช่ taproot)
+        #    จอเคยโชว์เป็นที่อยู่ปกติแล้วเซ็นให้ — เงินที่ส่งไปใครก็หยิบได้ = เผาทิ้งแบบ OP_RETURN → ไม่เซ็น
+        if info.get("anyone_can_spend_sat"):
+            o = [x for x in info["outputs"] if x.get("anyone_can_spend") and x["value"]][0]
+            t = fmt_amt(info["anyone_can_spend_sat"]) or "A LOT"
+            self.message("REFUSED", ["OUTPUT %d" % o["index"], "ADDRESS TYPE", "NOT IN USE YET",
+                                     "ANYONE COULD", "TAKE IT:", t, "", "NOT SIGNED"], "A=BACK", lcd.RED)
+            self.wait_key(("A", "CTRL"))
+            return
         odd = [o["index"] for o in info["outputs"] if o.get("unknown_script")]
         if odd:
             self.message("REFUSED", ["OUTPUT %d" % odd[0], "HAS A SCRIPT", "THIS DEVICE", "CANNOT SHOW", "",
@@ -1397,10 +1406,16 @@ class App:
             self.wait_key(("A", "CTRL"))
             return
         # 🔑 15 ต.ค. 2026: มี input ของคนอื่นปน (payjoin/coinjoin) ต้องเห็น — SEND อาจรวมเงินที่คนอื่นจ่าย
-        if info["inputs_mine"] == info["inputs"]:
-            lines.append("IN %d  ACCT %d" % (info["inputs"], self.account))
+        # 🔴 21 ต.ค. 2026 (ตรวจโค้ดเอง): message() ตัดทุกบรรทัดที่ 14 ตัว — input 100 ก้อน + account 10 เคยขึ้น "ACCT 1"
+        #    ยาวเกินเมื่อไหร่แยกเป็นคนละบรรทัด (ปกติยังบรรทัดเดียวเหมือนเดิม)
+        n_in, n_mine = info["inputs"], info["inputs_mine"]
+        if n_mine == n_in:
+            ln = "IN %d  ACCT %d" % (n_in, self.account)
+            lines += [ln] if len(ln) <= AMT_COLS else ["IN %d" % n_in, "ACCT %d" % self.account]
         else:
-            lines += ["IN %d MINE %d" % (info["inputs"], info["inputs_mine"]), "ACCT %d" % self.account]
+            ln = "IN %d MINE %d" % (n_in, n_mine)
+            lines += ([ln] if len(ln) <= AMT_COLS else ["IN %d" % n_in, "MINE %d" % n_mine]) \
+                + ["ACCT %d" % self.account]
         if not self.message_pages("REVIEW", lines, "A=NEXT  B=CANCEL",
                                   lcd.RED if pct >= 10 else lcd.WHITE):
             return
