@@ -20,22 +20,34 @@ class WordList:
     """
 
     def __init__(self, data):
+        # 🔴 25 ต.ค. 2026: CRASH MemoryError 8192 ไบต์ตอนเข้า NEW SEED → ทอยเต๋า (crash.txt: bip39.py __init__ starts.append)
+        #    เดิม: list ตำแหน่ง 2,048 ช่องโตทีละนิดจนต้องขอก้อนติดกัน 8 KB + strip() / bytes() ก๊อปไฟล์ 13 KB ซ้ำอีกรอบ
+        #    วัดบนเครื่องหลังบูต: แรมว่างรวม 193 KB แต่ก้อนติดกันใหญ่สุดแค่ 36 KB (แตกเป็นเศษ)
+        #    ตอนนี้: จองตาราง 4 KB ครั้งเดียว · ไม่ก๊อปไฟล์ (ตัดช่องว่างท้ายด้วยตำแหน่งแทน strip)
         if b"\r" in data:
             data = data.replace(b"\r", b"")
-        data = data.strip()
-        starts = [0]
-        i = data.find(b"\n")
-        while i >= 0:
-            starts.append(i + 1)
-            i = data.find(b"\n", i + 1)
-        if len(starts) != 2048:
-            raise ValueError("wordlist ต้องมี 2048 คำ ได้ %d" % len(starts))
+        end = len(data)
+        while end and data[end - 1] in (9, 10, 32):      # tab / ขึ้นบรรทัด / เว้นวรรค
+            end -= 1
         try:
             from array import array
-            self._s = array("H", starts)        # ตำแหน่งเริ่มของแต่ละคำ (ไฟล์ < 64 KB)
+            starts = array("H", bytes(2 * 2048))    # ตำแหน่งเริ่มของแต่ละคำ (ไฟล์ < 64 KB)
         except ImportError:
-            self._s = starts
-        self._d = bytes(data)
+            starts = [0] * 2048
+        n = 1
+        i = data.find(b"\n")
+        while 0 <= i < end:
+            if n == 2048:
+                n += 1
+                break
+            starts[n] = i + 1
+            n += 1
+            i = data.find(b"\n", i + 1)
+        if n != 2048 or data[:1] in (b"", b"\n"):
+            raise ValueError("wordlist ต้องมี 2048 คำ ได้ %d" % n)
+        self._s = starts
+        self._d = data
+        self._end = end
         prev = b""
         for k in range(2048):
             w = self._raw(k)
@@ -44,7 +56,7 @@ class WordList:
             prev = w
 
     def _raw(self, k):
-        e = self._s[k + 1] - 1 if k < 2047 else len(self._d)
+        e = self._s[k + 1] - 1 if k < 2047 else self._end
         return self._d[self._s[k]:e]
 
     def __len__(self):
@@ -114,6 +126,9 @@ def wordlist(path="english.txt"):
 
 def release_wordlist():
     """ปล่อยรายการคำคืนแรม — เรียกครั้งหน้าจะอ่านไฟล์ใหม่เอง
+
+    ⚠️ 25 ต.ค. 2026: Pico ไม่เรียกแล้ว — โหลดครั้งเดียวตอนบูต (~17 KB) แล้วเก็บไว้ตลอด
+       เพราะโหลดใหม่ทีหลังตอนแรมแตกเป็นเศษ = CRASH (เจอจริงตอนเข้าทอยเต๋า)
 
     🔑 15 ต.ค. 2026: วัดบน Pico รายการ 2,048 คำกินแรม 68 KB และเดิมค้างไว้ตลอดหลังใส่ seed
        (test seed ไม่โหลดรายการนี้ — เครื่องค้าง/แรมหมดจึงเกิดเฉพาะตอนใช้ seed )

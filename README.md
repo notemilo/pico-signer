@@ -113,7 +113,7 @@ for f in src/*.py src/english.txt main.py boot.py; do mpremote cp "$f" :"$(basen
 `boot.py` is what switches USB data off from power-on; without it the REPL stays reachable over USB until a seed
 is entered. To copy files again later, hold **B** while powering on.
 
-Fonts: `src/lcd.py` uses MicroPython's built-in 8×8 font. A nicer bitmap font can be dropped in as `font_sfmono.py` (same format), but none is included here for licensing reasons.
+Fonts: `src/lcd.py` uses MicroPython's built-in 8×8 font. A nicer bitmap font can be dropped in as `font_sfmono.py` (same format: `SCALES` for sizes 2/3/4 and `SMALL`, a 12 px cell for the button bar), but none is included here for licensing reasons. Without it the button bar uses the 8×8 font.
 
 ## Tests
 

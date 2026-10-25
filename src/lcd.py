@@ -227,6 +227,21 @@ class LCD(framebuf.FrameBuffer):
             for k in range(0, len(g), 3):
                 fill(cx + g[k + 1], ty + g[k], g[k + 2], 1, color)
 
+    def text_small(self, s, x, y, color=WHITE):
+        """ตัวเล็กช่อง 12 พิกเซล (font_sfmono.SMALL) — ใช้ในแถบบอกปุ่มล่างจอ
+
+        25 ต.ค. 2026: ผู้ใช้ ขอแถบปุ่มตัวเล็กลง ไม่แข่งกับเนื้อหา · ฟอนต์ในตัว 8 พิกเซลเล็กเกินอ่าน (ลองแล้ว 10 ก.ย.)
+        ไม่มีไฟล์ฟอนต์ / FONT_STYLE = classic → ใช้ฟอนต์ในตัว 8 พิกเซลแทน (ไม่พัง)
+        """
+        if not s:
+            return
+        fm = _font() if FONT_STYLE == "sfmono" else None
+        f = getattr(fm, "SMALL", None) if fm is not None else None
+        if f is not None:
+            self._text_bitmap(f, s, x, y, color)
+        else:
+            self.text(s, x, y + 2, color)
+
     def text_center(self, s, y, color=WHITE, scale=1):
         """วางข้อความกลางจอตามแนวนอน"""
         x = max(0, (WIDTH - len(s) * 8 * scale) // 2)

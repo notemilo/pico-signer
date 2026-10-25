@@ -69,6 +69,11 @@ class FakeLCD:
     def banner(self, s, *a, **k):
         LOG.append(str(s))
 
+    def text_small(self, s, x, y, *a, **k):   # แถบปุ่มตัวเล็ก (25 ต.ค. 2026)
+        LOG.append(str(s))
+        if x + len(str(s)) * 12 > self.width:
+            OUT_OF_SCREEN.append((x, y, len(str(s)) * 12, 18))
+
     def __getattr__(self, name):          # clear / fill_rect / show / backlight / pixel ...
         return lambda *a, **k: None
 
@@ -158,6 +163,18 @@ def drive(fn, keys):
     except Exhausted:
         pass
     return len(Q)
+
+
+# แถบปุ่มวาดเป็นชิ้น (กล่องปุ่ม + คำ) ตั้งแต่ 25 ต.ค. 2026 — เก็บข้อความเต็มไว้ให้ seen("A=135 B=246") ใช้ได้เหมือนเดิม
+_real_chrome = ui.App._chrome
+
+
+def _logged_chrome(self, title, hint):
+    LOG.append(str(hint))
+    return _real_chrome(self, title, hint)
+
+
+ui.App._chrome = _logged_chrome
 
 
 def new_app():
@@ -668,6 +685,30 @@ print("── 19. dice: กดปุ่มเดิมครบ 128 ครั้
 app = new_app()
 drive(lambda: app.screen_dice(12), ["A"] * 128)
 check("ไม่มี ROLLS? / LOOK RANDOM · ถึงหน้า WORD 12", not seen("LOOK RANDOM") and seen("WORD 12"))
+
+# ═══ 20. 25 ต.ค. 2026 — หน้า START: กล่องมน NEW / LOAD ซ้าย-ขวา + Test seed / Status ตัวเล็ก (ขึ้นลงเหมือนเดิม) ═══
+print("── 20. START: ลำดับปุ่มเดิม · ไม่วาดเลยขอบจอ (ทั้งมี/ไม่มีแถบ TEST SEED)")
+def start_pick(keys):
+    out = []
+    drive(lambda: out.append(new_app().start_menu()), keys)
+    return out[0] if out else "?"
+
+
+check("ลง 0-4 ครั้ง → 0,1,2,3,0 (วนเหมือน menu เดิม) · ขึ้น 1 ครั้ง → Status",
+      [start_pick(["DOWN"] * n + ["A"]) for n in range(5)] == [0, 1, 2, 3, 0] and start_pick(["UP", "A"]) == 3)
+check("B → None (run วนกลับหน้า START)", start_pick(["B"]) is None)
+check("ขวา → LOAD · ขวาแล้วซ้าย → NEW · ขวาซ้ำไม่เลยไป Test seed",
+      start_pick(["RIGHT", "A"]) == 1 and start_pick(["RIGHT", "LEFT", "A"]) == 0 and start_pick(["RIGHT", "RIGHT", "A"]) == 1)
+check("บน Test seed / Status: ขวา = เลือก · ซ้าย = None (เหมือน menu เดิม)",
+      start_pick(["DOWN", "DOWN", "RIGHT"]) == 2 and start_pick(["DOWN", "DOWN", "DOWN", "LEFT"]) is None)
+drive(new_app().start_menu, ["A"])
+check("เห็นครบ 4 ตัวเลือก", all(seen(s) for s in ("START", "NEW", "LOAD", "SEED", "Test seed", "Status")))
+for test in (False, True):
+    app = new_app()
+    app.is_test = test
+    OUT_OF_SCREEN.clear()
+    drive(app.start_menu, ["DOWN", "DOWN", "DOWN", "A"])
+    check("is_test=%s: ไม่มีอะไรวาดเลยขอบจอ" % test, not OUT_OF_SCREEN)
 
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:

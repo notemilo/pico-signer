@@ -67,8 +67,10 @@ KB_KEY_W = 24           # 240 / 10 ปุ่มต่อแถว · ตัว�
 KB_BG = 0x8631          # เทาเข้ม (48,48,48) = 0x3186 สลับไบต์แบบสีใน lcd.py
 
 TITLE_COLS = 10         # เหลือที่ให้เปอร์เซ็นต์แบตมุมขวาบน (สูงสุด "100%" = 4 ตัว)
-HINT_COLS = 15          # 240 พิกเซล / (8 พิกเซล x scale 2) = 15 ตัวพอดี
 HINT_MAX_LINES = 2
+HINT_CELL = 12          # ตัวเล็กในแถบปุ่ม (lcd.text_small · font_sfmono.SMALL)
+HINT_LINE_H = 18        # ความสูงแถบปุ่มต่อบรรทัด
+HINT_BG = 0x0842        # เทาเข้ม (66,66,66) = 0x4208 สลับไบต์ — แยกแถบปุ่มออกจากเนื้อหาที่พื้นดำ
 
 
 def _kb_rows(page):
@@ -121,26 +123,64 @@ def _kb_label(k, page):
     return k
 
 
-def _hint_lines(hint):
-    """ตัดข้อความบอกปุ่มเป็นบรรทัดละไม่เกิน 15 ตัว สูงสุด 2 บรรทัด
+def _hint_layout(hint, width=236, cell=12, max_lines=2):
+    """วางข้อความบอกปุ่ม — คืน (บรรทัด, จำนวนคู่ที่ใส่ไม่ลง, ความกว้างบรรทัดที่ยาวสุด)
 
-    ตัดตามช่องว่างเสมอ ไม่หั่นกลางคำว่า 'B=CANCEL' ให้อ่านไม่รู้เรื่อง
+    บรรทัด = list ของ (ปุ่มที่โชว์, คำอธิบาย, x) · ปุ่ม None = ข้อความธรรมดา
+    "A=SHOW QR" → ("A", "SHOW QR") (คำที่ไม่มี "=" ต่อท้ายคำอธิบายก่อนหน้า) · "UD" โชว์เป็น "UP DOWN"
+    ความกว้าง: กล่องปุ่ม len*cell+6 · เว้น 3 · คำอธิบาย len*cell · เว้นระหว่างคู่ 10
+    ลงบรรทัดเดียวได้ = บรรทัดเดียว · ไม่ได้ = 2 แถวแบบตาราง (ผู้ใช้ สั่ง 25 ต.ค. 2026):
+       แถวบน A กับ B · แถวล่าง X กับ Y และปุ่มอื่น · คอลัมน์ที่ 2 ตรงกันทั้งสองแถว
+       ตารางไม่พอดี (แถวไหนเกิน 2 คู่ / กว้างเกิน) → ไหลตามลำดับแบบเดิม ตัดระหว่างคู่เท่านั้น
+    (ฟังก์ชันนี้ไม่พึ่งอะไรนอกตัว — test_ui_text_fits ดึงไปรันตรง ๆ)
     """
-    lines = []
-    cur = ""
+    items = []
     for w in str(hint).split():
-        cand = w if not cur else cur + " " + w
-        if len(cand) <= HINT_COLS:
-            cur = cand
-            continue
-        if cur:
+        k, eq, v = w.partition("=")
+        if eq and k:
+            items.append([{"UD": "UP DOWN"}.get(k, k), v])
+        elif items:
+            items[-1][1] += " " + w
+        else:
+            items.append([None, w])
+
+    def wid(it):
+        return (len(it[0]) * cell + 9 if it[0] else 0) + len(it[1]) * cell
+
+    one = sum(wid(it) for it in items) + 10 * max(0, len(items) - 1)
+    if one <= width or len(items) < 2:
+        x, line = 0, []
+        for it in items:
+            line.append((it[0], it[1], x))
+            x += wid(it) + 10
+        return ([line] if line else []), 0, one
+    if max_lines >= 2:
+        order = ("A", "B", "X", "Y")
+        top = [it for it in items if it[0] in ("A", "B")]
+        bot = sorted([it for it in items if it[0] not in ("A", "B")],
+                     key=lambda it: order.index(it[0]) if it[0] in order else 9)
+        if top and bot and len(top) <= 2 and len(bot) <= 2:
+            col2 = max(wid(r[0]) for r in (top, bot)) + 12
+            widest = max(col2 + wid(r[1]) if len(r) > 1 else wid(r[0]) for r in (top, bot))
+            if widest <= width:
+                return [[(it[0], it[1], 0 if i == 0 else col2) for i, it in enumerate(r)]
+                        for r in (top, bot)], 0, widest
+    lines, cur, x, dropped, widest = [], [], 0, 0, 0
+    for it in items:
+        wd = wid(it)
+        need = x + 10 + wd if cur else wd
+        if cur and need > width:
             lines.append(cur)
-            if len(lines) == HINT_MAX_LINES:
-                return lines
-        cur = w[:HINT_COLS]
+            cur, need = [], wd
+        if not cur and len(lines) == max_lines:
+            dropped += 1
+            continue
+        cur.append((it[0], it[1], need - wd))
+        x = need
+        widest = max(widest, x)
     if cur:
         lines.append(cur)
-    return lines[:HINT_MAX_LINES]
+    return lines, dropped, widest
 
 
 def next_letters(words, prefix):
@@ -181,6 +221,39 @@ def next_letters(words, prefix):
     if exact:
         out.insert(0, "")
     return out
+
+
+def _corner(r):
+    """ระยะหดเข้าของขอบมนแต่ละแถว (แถว 0 = บนสุด) — จำนวนเต็มล้วน ไม่ต้องใช้ math"""
+    out = []
+    for k in range(r + 1):
+        d = r * r - (r - k) * (r - k)
+        s = 0
+        while (s + 1) * (s + 1) <= d:
+            s += 1
+        out.append(r - s)
+    return out
+
+
+def round_rect(d, x, y, w, h, r, color, fill):
+    """สี่เหลี่ยมมุมมน — fill=True ทึบ · False เป็นเส้นขอบ 1 พิกเซล (วาดด้วย fill_rect อย่างเดียว)"""
+    off = _corner(r)
+    if fill:
+        for k in range(r):
+            o = off[k]
+            d.fill_rect(x + o, y + k, w - 2 * o, 1, color)
+            d.fill_rect(x + o, y + h - 1 - k, w - 2 * o, 1, color)
+        d.fill_rect(x, y + r, w, h - 2 * r, color)
+        return
+    d.fill_rect(x + r, y, w - 2 * r, 1, color)
+    d.fill_rect(x + r, y + h - 1, w - 2 * r, 1, color)
+    d.fill_rect(x, y + r, 1, h - 2 * r, color)
+    d.fill_rect(x + w - 1, y + r, 1, h - 2 * r, color)
+    for k in range(1, r + 1):
+        o, n = off[k], max(1, off[k - 1] - off[k])
+        for yy in (y + k, y + h - 1 - k):
+            d.fill_rect(x + o, yy, n, 1, color)
+            d.fill_rect(x + w - o - n, yy, n, 1, color)
 
 
 def fmt_sat(v):
@@ -314,7 +387,7 @@ class App:
         self.d = lcd.LCD()
         self.k = lcd.Keys()
         self.d.backlight(True)
-        self._body_bottom = 218      # ขอบบนของแถบบอกปุ่ม อัปเดตทุกครั้งที่วาด
+        self._body_bottom = 222      # ขอบบนของแถบบอกปุ่ม อัปเดตทุกครั้งที่วาด
         self.passphrase = ""         # คำที่ 25 ตาม BIP39 (ว่าง = ไม่ใช้)
         self._bat = None             # (เปอร์เซ็นต์, โวลต์, mA, ข้อความ) หรือ None
         self._bat_t = -99999
@@ -380,18 +453,24 @@ class App:
                 self.d.text_big(txt, bx, top + 3, lcd.WHITE, 2)
             else:
                 self.d.text_big(txt, bx, top + 3, lcd.BLACK, 2)
-        # แถบบอกปุ่ม: ตัวขาวบนพื้นดำ **ขนาดเดียวกับเนื้อหา (scale 2)**
-        # ผู้ใช้ อ่าน scale 1 (สูง 0.8 มม.) ไม่ออกจริง ๆ — แจ้งเอง 10 ก.ย. 2026
-        # ยาวเกิน 15 ตัวก็ตัดลงบรรทัดที่สองให้เอง แถบจะสูงขึ้นตามและ
-        # เนื้อหาด้านบนถูกบีบให้พอดีโดยอัตโนมัติ (ดู self._body_bottom)
-        hl = _hint_lines(hint)
-        bar_h = 4 + 18 * len(hl)
+        # แถบบอกปุ่ม (25 ต.ค. 2026 · ผู้ใช้: "A=SELECT มาแข่งกับคำข้างบน" → แถบชัด ตัวเล็กลง)
+        # พื้นเทาเข้มแยกจากเนื้อหา · ชื่อปุ่มอยู่ในกล่องมนขาวตัวดำ ตามด้วยสิ่งที่ปุ่มทำ · ตัวช่อง 12 พิกเซล
+        # (เดิมตัวขาวบนพื้นดำ scale 2 · ฟอนต์ในตัว 8 พิกเซลเล็กเกินอ่าน — ผู้ใช้ แจ้ง 10 ก.ย. 2026)
+        # ยาวเกินบรรทัดก็ตัดลงบรรทัดที่สอง แถบสูงขึ้นตาม เนื้อหาด้านบนถูกบีบเอง (ดู self._body_bottom)
+        hl = _hint_layout(hint, cell=HINT_CELL, max_lines=HINT_MAX_LINES)[0]
+        bar_h = HINT_LINE_H * max(1, len(hl))
         bar_y = 240 - bar_h
-        self.d.fill_rect(0, bar_y, 240, bar_h, lcd.BLACK)
-        hy = bar_y + 2
+        self.d.fill_rect(0, bar_y, 240, bar_h, HINT_BG)
+        ly = bar_y
         for ln in hl:
-            self.d.text_big(ln, 2, hy, lcd.WHITE, 2)
-            hy += 18
+            for k, v, x in ln:
+                x += 2
+                if k:
+                    round_rect(self.d, x, ly + 2, len(k) * HINT_CELL + 6, 15, 3, lcd.WHITE, True)
+                    self.d.text_small(k, x + 3, ly + 4, lcd.BLACK)
+                    x += len(k) * HINT_CELL + 9
+                self.d.text_small(v, x, ly + 4, lcd.WHITE)
+            ly += HINT_LINE_H
         self._body_bottom = bar_y
         return top + 28
 
@@ -407,16 +486,16 @@ class App:
         self.d.show()
 
     def confirm(self, title, lines):
-        self.message(title, lines, "A=OK  B=CANCEL")
+        self.message(title, lines, "A=OK  B=BACK")
         return self.wait_key(("A", "CTRL", "B")) in ("A", "CTRL")
 
     def body_rows(self, hint):
         """จำนวนบรรทัด scale 2 ที่ message() วาดได้ (คิดแถบ TEST SEED และแถบบอกปุ่ม)"""
         top = (13 if self.is_test else 0) + 28
-        bar_y = 240 - (4 + 18 * len(_hint_lines(hint)))
+        bar_y = 240 - HINT_LINE_H * max(1, len(_hint_layout(hint, cell=HINT_CELL, max_lines=HINT_MAX_LINES)[0]))
         return min(8, max(1, (bar_y - top) // 22))
 
-    def message_pages(self, title, lines, hint="A=NEXT  B=CANCEL", color=lcd.WHITE):
+    def message_pages(self, title, lines, hint="A=NEXT  B=BACK", color=lcd.WHITE):
         """เหมือน message() แต่ถ้าบรรทัดเกินจอ แบ่งเป็นหลายหน้า (ห้ามทิ้งบรรทัดเงียบ ๆ)
 
         คืน False ถ้ากด B
@@ -464,6 +543,48 @@ class App:
             elif key in ("B", "LEFT"):
                 return None
 
+    def start_menu(self):
+        """หน้า START — NEW / LOAD เป็นกล่องมนใหญ่ซ้าย-ขวา (ทางหลัก) · Test seed / Status ตัวเล็กชิดล่าง
+
+        🔑 25 ต.ค. 2026 (ผู้ใช้): ใช้ Krux แล้ว "ไปไม่ถูก" เพราะเมนูเยอะ — ให้เห็นทันทีว่าทางหลักมีแค่ 2 ทาง
+           รอบแรกเป็นกล่องบน-ล่าง ผู้ใช้ ลองบนเครื่องแล้ว "ดูแน่น" → เปลี่ยนเป็นซ้าย-ขวา มุมมน
+           "EXISTING" ยาวเกินกล่องครึ่งจอ (128 > 110 พิกเซล) → ใช้ LOAD (ผู้ใช้ ตกลง · ชื่อต้องตรงกันทุกจุด)
+        ปุ่ม: ซ้าย/ขวา = สลับ NEW กับ LOAD · ขึ้น/ลง = วน 4 ตัวตามลำดับเดิม (เส้นทางเดิมกดเหมือนเดิม) · A = เลือก
+        ตัวที่เลือกอยู่ = กล่องทึบสีเหลืองตัวดำ · ตัวอื่นเป็นแค่กรอบ → ดูจากรูปร่างได้ ไม่ใช้สีบอกอย่างเดียว
+        คืน 0 NEW · 1 LOAD · 2 Test seed · 3 Status · None กด B
+        """
+        minor = ("Test seed", "Status")
+        sel = 0
+        while True:
+            self.d.clear(lcd.BLACK)
+            y = self._chrome("START", "A=SELECT") + 10
+            for i, (word, x) in enumerate((("NEW", 6), ("LOAD", 124))):
+                if i == sel:
+                    round_rect(self.d, x, y, 110, 104, 12, lcd.YELLOW, True)     # เหลือง = ตัวที่เลือก (ผู้ใช้ สั่ง 25 ต.ค.)
+                    col = lcd.BLACK
+                else:
+                    round_rect(self.d, x, y, 110, 104, 12, lcd.GREY, False)
+                    col = lcd.WHITE
+                self.d.text_big(word, x + (110 - len(word) * 24) // 2, y + 28, col, 3)
+                self.d.text_big("SEED", x + (110 - 4 * 16) // 2, y + 66, col, 2)
+            y = self._body_bottom - 52                 # ชิดแถบปุ่มล่าง (มีแถบ TEST SEED ก็ไม่ชนกล่อง)
+            for i, label in enumerate(minor, 2):
+                mark = ">" if i == sel else " "
+                self.d.text_big(mark + label, 4, y, lcd.YELLOW if i == sel else lcd.GREY, 2)
+                y += 24
+            self.d.show()
+            key = self.wait_key(timeout_ms=15000)    # หมดเวลา = วาดใหม่ เลขแบตอัปเดต (เหมือน menu)
+            if key == "UP":
+                sel = (sel - 1) % 4
+            elif key == "DOWN":
+                sel = (sel + 1) % 4
+            elif key in ("LEFT", "RIGHT") and sel < 2:
+                sel = 0 if key == "LEFT" else 1
+            elif key in ("A", "CTRL", "RIGHT"):
+                return sel
+            elif key in ("B", "LEFT"):
+                return None
+
     # ── สร้าง seed จากลูกเต๋า ────────────────────────────────────────
     # ── New seed: ทอยเต๋านอกเครื่อง แล้วกรอกผล ─────────────────────────
     def screen_new_seed(self):
@@ -495,7 +616,7 @@ class App:
             inword = n % 11
             self.d.clear(lcd.BLACK)
             y = self._chrome("D %d/%d" % (n + 1, NEED),
-                             "A=135 B=246 X=DEL Y=QUIT")
+                             "A=135 B=246 X=DEL Y=BACK")
             # ⚠️ scale 2 = 14 ตัวอักษรต่อบรรทัดเท่านั้น ข้อความต้องสั้นกว่านั้นเสมอ
             #    "WORD 23 R11/11" = 14 พอดี · "WORD 24 R1/3" = 12 · "WORD 12 R7/7" = 12
             if widx < FIRST:
@@ -533,7 +654,7 @@ class App:
                 if bits:                   # LEFT = โยกจอยไปซ้าย (ของเดิม)
                     bits.pop()
             elif key == "Y":
-                if self.confirm("QUIT?", ["ROLLS WILL BE", "LOST", "", "ARE YOU SURE?"]):
+                if self.confirm("GO BACK?", ["ROLLS WILL BE", "LOST", "", "ARE YOU SURE?"]):
                     return
         # ⛔ 19 ต.ค. 2026: เคยลองใส่หน้าเตือน "ผลทอยดูไม่สุ่ม" (แนวคิดจาก Krux) แล้วเอาออกตาม ผู้ใช้:
         #    "ทอยเต๋าจริงแล้วกรอก = สุ่มจริง ไม่ควรมีการเตือน เตือนแล้วคนทอยจะไม่มั่นใจ" — ห้ามใส่กลับ
@@ -599,14 +720,14 @@ class App:
             decoys = [wl[(idx + d) % 2048] for d in (-1, 1, 2)]
             pos = idx % 4
             opts = decoys[:pos] + [w] + decoys[pos:]
-            j = self.menu("WORD %d?" % (i + 1), opts, "A=PICK  B=STOP")
+            j = self.menu("WORD %d?" % (i + 1), opts, "A=PICK  B=BACK")
             if j is None:
                 return False
             if opts[j] == w:
                 i += 1
                 continue
             self.message("WRONG", ["WORD %d IS" % (i + 1), "NOT", opts[j], "", "CHECK PAPER"],
-                         "A=RETRY B=WORDS", lcd.RED)
+                         "A=RETRY B=BACK", lcd.RED)
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return False
         self.message("PAPER OK", ["ALL %d WORDS" % n, "MATCH", "", "KEEP IT SAFE"], "A=NEXT", lcd.GREEN)
@@ -642,7 +763,7 @@ class App:
         คืน True = ใช่ ไปคำถัดไป · False = พิมพ์คำนี้ใหม่
         """
         self.d.clear(lcd.BLACK)
-        y = self._chrome("W %d/%d" % (idx, count), "A=YES  B=NO")
+        y = self._chrome("W %d/%d" % (idx, count), "A=YES  B=BACK")
         self.d.text_big("THIS WORD?", 6, y, lcd.WHITE, 2)
         y += 36
         # scale 3 = 24 พิกเซล/ตัว -> คำยาวสุดใน BIP39 คือ 8 ตัว = 192 ลงจอพอดี
@@ -652,8 +773,8 @@ class App:
 
     # ── ใส่คำที่มีอยู่แล้ว ───────────────────────────────────────────
     def screen_existing_seed(self):
-        """Existing Seed — มี seed อยู่แล้ว: พิมพ์ 24 / 12 คำ หรือสแกน Compact SeedQR"""
-        j = self.menu("EXISTING", ["Type 24 words", "Type 12 words", "Scan SeedQR"])
+        """LOAD SEED (เดิมชื่อ Existing seed) — มี seed อยู่แล้ว: พิมพ์ 24 / 12 คำ หรือสแกน Compact SeedQR"""
+        j = self.menu("LOAD SEED", ["Type 24 words", "Type 12 words", "Scan SeedQR"])
         if j == 0:
             self.screen_type_words(24)
         elif j == 1:
@@ -699,7 +820,7 @@ class App:
                     shown = prefix + ch.upper()
                 self.d.clear(lcd.BLACK)
                 y = self._chrome("W %d/%d" % (len(got) + 1, count),
-                                 "UD=LETTER A=OK X=DEL B=QUIT")
+                                 "UD=LETTER A=OK X=DEL B=BACK")
                 self.d.text_big(shown, 6, y, lcd.YELLOW, 3)
                 y += 32
                 self.d.text("%d of %d choices  %d words"
@@ -735,7 +856,7 @@ class App:
                         got.pop()
                         break
                 elif key == "B":
-                    if self.confirm("QUIT?", ["WORDS WILL BE", "LOST"]):
+                    if self.confirm("GO BACK?", ["WORDS WILL BE", "LOST"]):
                         return None
         return got
 
@@ -751,8 +872,8 @@ class App:
             return
         mn = " ".join(got)
         if not bip39.is_valid(mn, WL):
-            self.message("ERROR", ["CHECKSUM BAD", "", "WORD IS WRONG", "OR ORDER WRONG"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("ERROR", ["CHECKSUM BAD", "", "WORD IS WRONG", "OR ORDER WRONG"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         self.load_mnemonic(mn, is_test=devseed.is_test_mnemonic(mn))
 
@@ -777,8 +898,8 @@ class App:
             return
         mn = " ".join(parts)
         if not bip39.is_valid(mn, WL):      # ไม่ควรเกิด — คำมาจาก last_word_candidates เอง
-            self.message("ERROR", ["CHECKSUM BAD"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("ERROR", ["CHECKSUM BAD"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         self.load_mnemonic(mn, is_test=devseed.is_test_mnemonic(mn))
 
@@ -791,11 +912,11 @@ class App:
         bits = []
         while len(bits) < k:
             cur = "".join(str(b) for b in bits)
-            # 🔑 แถบปุ่มต้องเขียนเหมือนหน้า New seed ทุกตัวอักษร ("A=135 B=246 X=DEL Y=QUIT")
+            # 🔑 แถบปุ่มต้องเขียนเหมือนหน้า New seed ทุกตัวอักษร ("A=135 B=246 X=DEL Y=BACK")
             #    เดิมหน้านี้เขียน "A=ODD B=EVEN" ในเนื้อความ + แถบปุ่มมีแค่ X/Y → ผู้ใช้ งง (15 ก.ย. 2026)
             self.message("WORD %d" % count, ["ROLL %d/%d" % (len(bits) + 1, k), "",
                                              cur + "_" * (k - len(bits))],
-                         "A=135 B=246 X=DEL Y=QUIT")
+                         "A=135 B=246 X=DEL Y=BACK")
             key = self.wait_key(("A", "B", "X", "LEFT", "Y"))
             if key == "A":
                 bits.append(1)
@@ -805,7 +926,7 @@ class App:
                 if bits:
                     bits.pop()
             elif key == "Y":
-                if self.confirm("QUIT?", ["ROLLS WILL BE", "LOST"]):
+                if self.confirm("GO BACK?", ["ROLLS WILL BE", "LOST"]):
                     return None
         idx = 0
         for b in bits:
@@ -845,9 +966,8 @@ class App:
         if not same_seed:
             self.account = 0
         dt = time.ticks_diff(time.ticks_ms(), t0)
-        # 🔑 15 ต.ค. 2026: ใส่ seed เสร็จแล้วไม่ต้องใช้รายการคำ (68 KB) — ปล่อยคืนให้ขั้นเซ็น/ทำ QR
-        #    (ฟังก์ชันที่ต้องใช้จะเรียก bip39.wordlist() โหลดใหม่เอง)
-        bip39.release_wordlist()
+        # 25 ต.ค. 2026: ไม่ปล่อยรายการคำคืนแล้ว — ตอนนี้เป็นก้อนเดียว ~17 KB (เดิม list 68 KB)
+        #    โหลดไว้ตั้งแต่บูต (main) · โหลดใหม่ทีหลังตอนแรมแตกเป็นเศษ = CRASH (เจอจริงตอนเข้าทอยเต๋า)
         gc.collect()
         fp = self.root.my_fingerprint().hex().upper()
         self.message("READY", [
@@ -900,8 +1020,8 @@ class App:
            ถ้าใช้ passphrase ต้องเก็บแยกต่างหากเสมอ
         """
         if not self.mnemonic:
-            self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SEED", ["NO SEED LOADED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         if self.is_test:
             if not self.confirm("TEST SEED", ["THIS IS A TEST", "SEED - QR IS",
@@ -924,8 +1044,8 @@ class App:
                 data = seedqr.mnemonic_to_standard_digits(self.mnemonic, WL)
             m = qr.encode(data, qr.EC_L)
         except Exception as e:
-            self.message("QR FAILED", [str(e)[:14]], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("QR FAILED", [str(e)[:14]], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         n = len(m)
         del data
@@ -1064,7 +1184,7 @@ class App:
         while True:
             rows = pages[page]
             self.d.clear(lcd.BLACK)
-            y = self._chrome("PASS %d" % len(txt), "A=TYPE X=DEL Y=DONE B=QUIT")
+            y = self._chrome("PASS %d" % len(txt), "A=TYPE X=DEL Y=DONE B=BACK")
             if txt:
                 shown = txt[-14:]
                 self.d.text_big(shown, 6, y, lcd.WHITE, 2)
@@ -1095,7 +1215,7 @@ class App:
                 r, c = _kb_move(rows, r, c, key)
                 continue
             if key == "B":
-                if self.confirm("QUIT?", ["DISCARD THIS", "PASSPHRASE?"]):
+                if self.confirm("GO BACK?", ["DISCARD THIS", "PASSPHRASE?"]):
                     return None
                 continue
             if key == "X":
@@ -1120,8 +1240,8 @@ class App:
     def screen_set_passphrase(self):
         """เพิ่ม/แก้ passphrase ของ seed ที่โหลดอยู่"""
         if not self.mnemonic:
-            self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SEED", ["NO SEED LOADED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         pw = self.screen_passphrase(self.passphrase)
         if pw is None:
@@ -1185,8 +1305,8 @@ class App:
            ถ้าหลุด private key ออกไป = เงินหายทั้งกระเป๋า
         """
         if not self.root:
-            self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SEED", ["NO SEED LOADED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         self.message("XPUB", ["BUILDING..."], "")
         gc.collect()
@@ -1210,8 +1330,8 @@ class App:
         try:
             m = qr.encode(text, qr.EC_M)
         except Exception as e:
-            self.message("QR FAILED", [str(e)[:28]], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("QR FAILED", [str(e)[:28]], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         lcd.draw_qr(self.d, m)
         self.d.show()
@@ -1265,7 +1385,7 @@ class App:
                 # ⚠️ แถบนี้นอนอยู่ในขอบขาวของ QR ขยายตัวอักษรไม่ได้
                 #    (ต้องย่อ QR ลง แล้วกล้องจะอ่านยากขึ้น — ไม่คุ้ม)
                 #    ยาวได้ 29 ตัวเท่านั้น · เดิม 32 ตัวจึงหลุดขอบ "B=EXIT" เหลือ "B=EX"
-                self.d.text("%d/%d   X/Y=SIZE   B=EXIT"
+                self.d.text("%d/%d   X/Y=SIZE   B=BACK"
                             % (i + 1, len(frames)), 2, 230, lcd.BLACK)
                 self.d.show()
                 key = self.wait_key(timeout_ms=None if manual else 900)
@@ -1296,8 +1416,8 @@ class App:
     #    หลักที่ยึด: **แสดงทุกอย่างที่กระทบเงิน และปฏิเสธเมื่อไม่มั่นใจ**
     def screen_sign(self, src):
         if not self.root:
-            self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SEED", ["NO SEED LOADED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         # 🔑 15 ต.ค. 2026: เครื่องค้างที่ "GOT 1/2" หลังสแกน PSBT จาก wallet (seed + passphrase · ทำซ้ำบนโต๊ะไม่ได้)
         #    ต้นเหตุ (crash.txt): MemoryError ตอน import psbt → แก้ด้วยการโหลดตั้งแต่เปิดเครื่อง (หัวไฟล์)
@@ -1316,13 +1436,13 @@ class App:
             #    บอกผู้ใช้ตรง ๆ ว่าฝั่งที่สร้าง PSBT (คอม/wallet) อาจโดนเจาะ — ไม่ใช่แค่ BAD PSBT
             self.message("PSBT LIES", ["KEY INFO FOR", "THIS SEED IS", "FAKE", "",
                                        "WALLET OR PC", "MAY BE HACKED", "", "NOT SIGNED"],
-                         "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                         "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         except Exception as e:
             # 🔑 17 ต.ค. 2026 (รีวิวภายนอก): เดิมตัดเหลือ 14 ตัว + ข้อความเป็นภาษาไทยที่จอวาดไม่ได้ → แปลเป็นอังกฤษแล้ว + ตัดบรรทัด
-            self.message("BAD PSBT", [str(type(e).__name__)[:14]] + wrap_text(e, 14, 6), "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("BAD PSBT", [str(type(e).__name__)[:14]] + wrap_text(e, 14, 6), "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
 
         # ปฏิเสธก่อนถ้าข้อมูลไม่พอจะตัดสินใจ
@@ -1332,27 +1452,27 @@ class App:
             # 🔴 12 ต.ค. 2026: ยอด input เชื่อได้เฉพาะจาก tx เก่าทั้งใบ (กัน CVE-2020-14199 · ดู psbt._prev_out)
             self.message("REFUSED", ["NO PREV TX FOR", "%d INPUT(S)" % info["inputs_unknown_amount"], "",
                                      "CANT VERIFY", "AMOUNT + FEE"],
-                         "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                         "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         if info["fee"] < 0:
-            self.message("REFUSED", ["OUTPUTS EXCEED", "INPUTS"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("REFUSED", ["OUTPUTS EXCEED", "INPUTS"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         # 🔑 15 ต.ค. 2026 (SeedSigner PSBTSeedCannotSignView): seed นี้เซ็น input ไหนไม่ได้เลย
         #    = เลือก seed/passphrase ผิด → บอกตั้งแต่ตอนนี้ ไม่ต้องให้กดผ่านหน้ารีวิวแล้วค่อยเจอ NOT SIGNED
         #    (อยู่หลังด่าน "ไม่มี tx เก่า" เพราะไม่รู้ script ของ input ก็นับไม่ได้ว่าเซ็นได้ไหม)
         if not info["inputs_signable"]:
             self.message("NOT YOURS", ["NO INPUT CAN", "BE SIGNED BY", "THIS SEED", "",
-                                       "WRONG SEED OR", "PASSPHRASE?"], "A=BACK", lcd.ORANGE)
-            self.wait_key(("A", "CTRL"))
+                                       "WRONG SEED OR", "PASSPHRASE?"], "A=OK", lcd.ORANGE)
+            self.wait_key(("A", "CTRL", "B"))
             return
         # 🔴 12 ต.ค. 2026: ค่าธรรมเนียมเกินเพดาน (ดู psbt.MAX_FEE_PCT) = ไม่เซ็น ไม่ใช่แค่เตือน
         if info["fee_over_cap"]:
             fl = [fmt_btc(info["fee"])[:14], "BTC"] if fmt_amt(info["fee"]) is None else [fmt_amt(info["fee"])]
             self.message("REFUSED", ["FEE OVER %d%%" % P.MAX_FEE_PCT, "OF TOTAL OUT", "", "FEE"] + fl
-                         + ["", "NOT SIGNED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                         + ["", "NOT SIGNED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
 
         # 🔴 บัค F (15 ก.ย. 2026): input อยู่นอก account ที่เลือก → ไม่เซ็น ให้ไปเปลี่ยน account ก่อน
@@ -1364,7 +1484,7 @@ class App:
                 accs = accs[:12] + ".."
             self.message("WRONG ACCT", ["INPUT ACCT", accs, "YOU USE ACCT" , "%d" % self.account,
                                         "SWITCH ACCOUNT", "IN WALLET MENU", "", "NOT SIGNED"],
-                         "A=BACK", lcd.RED)
+                         "A=OK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))
             return
 
@@ -1373,8 +1493,8 @@ class App:
         # 🔴 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): OP_RETURN ใช้ต่อไม่ได้ เงินที่แนบไป = เผาทิ้ง → ไม่เซ็น
         if info.get("op_return_sat"):
             t = fmt_amt(info["op_return_sat"]) or "A LOT"
-            self.message("REFUSED", ["OP_RETURN", "OUTPUT BURNS", t, "", "NOT SIGNED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("REFUSED", ["OP_RETURN", "OUTPUT BURNS", t, "", "NOT SIGNED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         # 🔴 21 ต.ค. 2026 (ตรวจโค้ดเอง): ที่อยู่แบบที่บิตคอยน์ยังไม่เปิดใช้ (bc1z… / bc1p ที่ไม่ใช่ taproot)
         #    จอเคยโชว์เป็นที่อยู่ปกติแล้วเซ็นให้ — เงินที่ส่งไปใครก็หยิบได้ = เผาทิ้งแบบ OP_RETURN → ไม่เซ็น
@@ -1382,14 +1502,14 @@ class App:
             o = [x for x in info["outputs"] if x.get("anyone_can_spend") and x["value"]][0]
             t = fmt_amt(info["anyone_can_spend_sat"]) or "A LOT"
             self.message("REFUSED", ["OUTPUT %d" % o["index"], "ADDRESS TYPE", "NOT IN USE YET",
-                                     "ANYONE COULD", "TAKE IT:", t, "", "NOT SIGNED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                                     "ANYONE COULD", "TAKE IT:", t, "", "NOT SIGNED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         odd = [o["index"] for o in info["outputs"] if o.get("unknown_script")]
         if odd:
             self.message("REFUSED", ["OUTPUT %d" % odd[0], "HAS A SCRIPT", "THIS DEVICE", "CANNOT SHOW", "",
-                                     "NOT SIGNED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                                     "NOT SIGNED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
 
         fee = info["fee"]
@@ -1415,8 +1535,8 @@ class App:
             else:
                 lines.append("CHG  NONE")
         except AmountTooBig:
-            self.message("REFUSED", ["AMOUNT TOO", "BIG TO SHOW", "", "NOT SIGNED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("REFUSED", ["AMOUNT TOO", "BIG TO SHOW", "", "NOT SIGNED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         # 🔑 15 ต.ค. 2026: มี input ของคนอื่นปน (payjoin/coinjoin) ต้องเห็น — SEND อาจรวมเงินที่คนอื่นจ่าย
         # 🔴 21 ต.ค. 2026 (ตรวจโค้ดเอง): message() ตัดทุกบรรทัดที่ 14 ตัว — input 100 ก้อน + account 10 เคยขึ้น "ACCT 1"
@@ -1429,7 +1549,7 @@ class App:
             ln = "IN %d MINE %d" % (n_in, n_mine)
             lines += ([ln] if len(ln) <= AMT_COLS else ["IN %d" % n_in, "MINE %d" % n_mine]) \
                 + ["ACCT %d" % self.account]
-        if not self.message_pages("REVIEW", lines, "A=NEXT  B=CANCEL",
+        if not self.message_pages("REVIEW", lines, "A=NEXT  B=BACK",
                                   lcd.RED if pct >= 10 else lcd.WHITE):
             return
 
@@ -1448,7 +1568,7 @@ class App:
                     il += amt_lines(lab, d["value"])
                 except AmountTooBig:
                     il += [lab, "TOO BIG"]
-            if not self.message_pages("INPUTS", il, "A=NEXT  B=CANCEL"):
+            if not self.message_pages("INPUTS", il, "A=NEXT  B=BACK"):
                 return
 
         # 🔑 18 ต.ค. 2026 (แนวคิดจาก ShieldSigner): คำเตือนที่ไม่ห้ามเซ็น แต่ผู้ใช้ควรรู้ก่อนกด
@@ -1457,7 +1577,7 @@ class App:
         if fr is not None and fr >= P.HIGH_FEE_RATE:
             frs = fmt_sat(fr) if fr <= 99999999 else "OVER 99999999"   # ห้ามเกิน 14 ตัว (message ตัด)
             self.message("FEE RATE", ["FEE RATE IS", "ABOUT", frs, "SAT/VB", "",
-                                      "MUCH HIGHER", "THAN NORMAL"], "A=NEXT  B=CANCEL", lcd.ORANGE)
+                                      "MUCH HIGHER", "THAN NORMAL"], "A=NEXT  B=BACK", lcd.ORANGE)
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return
         # output ต่ำกว่าค่าฝุ่น — อาจไม่คุ้มค่าธรรมเนียมที่จะใช้ต่อ หรือเป็นของที่ใช้ติดตามกระเป๋า
@@ -1467,7 +1587,7 @@ class App:
             self.message("TINY OUT", ["OUTPUT %d IS" % o["index"], fmt_amt(o["value"]),
                                          "BELOW %d SAT" % P.DUST_SAT, "", "MAY NOT BE", "WORTH SPENDING"]
                          + (["(+%d MORE)" % (len(dust) - 1)] if len(dust) > 1 else []),
-                         "A=NEXT  B=CANCEL", lcd.ORANGE)
+                         "A=NEXT  B=BACK", lcd.ORANGE)
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return
 
@@ -1479,7 +1599,7 @@ class App:
             if info["rel_lock_secs"]:
                 body.append("%s MINUTES" % fmt_sat(info["rel_lock_secs"] // 60))
             body.append("OF CONFIRMS")
-            self.message("REL LOCK", body, "A=NEXT  B=CANCEL", lcd.ORANGE)
+            self.message("REL LOCK", body, "A=NEXT  B=BACK", lcd.ORANGE)
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return
 
@@ -1492,7 +1612,7 @@ class App:
                 body = ["CANNOT SPEND", "UNTIL UNIX TIME", "", str(info["locktime"])]
             else:
                 body = ["CANNOT SPEND", "UNTIL BLOCK", "", fmt_sat(info["locktime"])]
-            self.message("LOCKTIME", body, "A=NEXT  B=CANCEL", lcd.ORANGE)
+            self.message("LOCKTIME", body, "A=NEXT  B=BACK", lcd.ORANGE)
             if self.wait_key(("A", "CTRL", "B")) == "B":
                 return
 
@@ -1508,7 +1628,7 @@ class App:
             a = o["address"] or "(odd script)"
             self.d.clear(lcd.BLACK)
             title = ("SELF %d/%d" if head == "SELF" else "TO %d/%d") % (i + 1, len(dests))
-            y = self._chrome(title, "A=NEXT  B=CANCEL")
+            y = self._chrome(title, "A=NEXT  B=BACK")
             # 🔴 17 ต.ค. 2026 (รีวิวภายนอก): เดิม "%s SAT" ยาวเกินจอตั้งแต่ 1,000 BTC → ตัวเลขตกขอบ
             #    ต่ำกว่า 10 BTC 1 บรรทัดมีหน่วย · มากกว่านั้นเลข BTC บรรทัดหนึ่ง หน่วยอีกบรรทัด
             t = fmt_amt(o["value"])
@@ -1553,21 +1673,21 @@ class App:
         try:
             n = ps.sign(self.root, account=self.account)
         except Exception as e:
-            self.message("SIGN FAIL", wrap_text(e, 14, 7), "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("SIGN FAIL", wrap_text(e, 14, 7), "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         dt = time.ticks_diff(time.ticks_ms(), t0)
         # เซ็นได้ไม่ครบทุก input ที่ประกาศว่าเป็นของเรา = มีอะไรไม่ตรง (เส้นทางโกหก/คนละ account)
         # ธุรกรรมที่เซ็นไม่ครบใช้ไม่ได้อยู่แล้ว แต่ห้ามโชว์ QR ให้เข้าใจผิดว่าเสร็จ
         if 0 < n < info["inputs_mine"]:
             self.message("SIGN ERROR", ["SIGNED %d/%d" % (n, info["inputs_mine"]), "", "SOME INPUTS",
-                                        "NOT VERIFIED", "", "DO NOT USE"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                                        "NOT VERIFIED", "", "DO NOT USE"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         if n == 0:
             self.message("NOT SIGNED", ["NO INPUT IS", "FROM THIS SEED", "",
-                                        "WRONG SEED?"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+                                        "WRONG SEED?"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         self.message("SIGNED", ["%d input(s)" % n, "took %d ms" % dt, "",
                                 "SHOW QR NEXT"], "A=SHOW QR")
@@ -1591,8 +1711,8 @@ class App:
         try:
             sc = SC.Scanner()
         except Exception as e:
-            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
 
         dec = bbqr.Decoder()
@@ -1613,7 +1733,7 @@ class App:
                 # 13 ต.ค. 2026: QR ชุดใหญ่เกินเพดาน (bbqr.Decoder.MAX_TOTAL_CHARS) — บอกเลย ไม่ต้องรอหมดเวลา
                 if dec.too_big and not dec.have:
                     self.message("REFUSED", ["QR TOO BIG", "", "MAX %d KB" % (dec.MAX_TOTAL_CHARS * 5 // 8 // 1024),
-                                             "", "NOT A NORMAL", "PSBT"], "A=BACK", lcd.RED)
+                                             "", "NOT A NORMAL", "PSBT"], "A=OK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
                     return
 
@@ -1624,7 +1744,7 @@ class App:
                         body = ["GOT %d/%d" % (have, dec.total), "", "KEEP POINTING"]
                     else:
                         body = ["WAITING...", "", "POINT AT", "THE QR CODE"]
-                    self.message("SCAN QR", body, "B=CANCEL",
+                    self.message("SCAN QR", body, "B=BACK",
                                  lcd.YELLOW if dec.total else lcd.WHITE)
 
                 if self.k.any_pressed():
@@ -1632,7 +1752,7 @@ class App:
                         return
                 if time.ticks_diff(time.ticks_ms(), t_last) > 120000:
                     self.message("TIMEOUT", ["NOTHING", "SCANNED", "", "CHECK CABLE"],
-                                 "A=BACK", lcd.RED)
+                                 "A=OK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
                     return
                 time.sleep_ms(30)
@@ -1653,11 +1773,11 @@ class App:
             res = None
             del dec
             gc.collect()
-            self.message("REFUSED", ["OUT OF MEMORY", "DECODING QR", "", "PSBT TOO BIG"], "A=BACK", lcd.RED)
+            self.message("REFUSED", ["OUT OF MEMORY", "DECODING QR", "", "PSBT TOO BIG"], "A=OK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))
             return
         if res is None:
-            self.message("BAD QR", ["FRAMES OK BUT", "DECODE FAILED"], "A=BACK", lcd.RED)
+            self.message("BAD QR", ["FRAMES OK BUT", "DECODE FAILED"], "A=OK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))
             return
         data, typ = res
@@ -1665,7 +1785,7 @@ class App:
         gc.collect()
         if typ != "P":
             self.message("NOT A PSBT", ["TYPE", "'%s'" % str(typ)[:12], "", "EXPECTED 'P'"],
-                         "A=BACK", lcd.RED)
+                         "A=OK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))
             return
         self.screen_sign(data)
@@ -1686,8 +1806,8 @@ class App:
             self.wait_key(("A", "CTRL"))
             return True
         self.message("USB ON!", ["COULD NOT", "TURN OFF USB", "", "SEED ENTRY", "BLOCKED", "",
-                                 "POWER OFF AND", "TRY AGAIN"], "A=BACK", lcd.RED)
-        self.wait_key(("A", "CTRL"))
+                                 "POWER OFF AND", "TRY AGAIN"], "A=OK", lcd.RED)
+        self.wait_key(("A", "CTRL", "B"))
         return False
 
     def screen_status(self):
@@ -1725,7 +1845,7 @@ class App:
               "RAM %d" % gc.mem_free()]
         if hashes.sha512_backend() == "python":
             fw.append("! SLOW SHA512")
-        self.message("Firmware", fw, "A=BACK")
+        self.message("Firmware", fw, "A=OK")
         self.wait_key(("A", "CTRL", "B"))
 
     # ── โหลด seed จาก CompactSeedQR ─────────────────────────────────
@@ -1740,8 +1860,8 @@ class App:
         try:
             sc = SC.Scanner()
         except Exception as e:
-            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return None
 
         col = seedqr.Collector()
@@ -1761,12 +1881,12 @@ class App:
                         body = ["READ %d/%d" % (col.count, col.need), "", "HOLD STILL"]
                     else:
                         body = ["POINT AT", "SEEDQR PAPER"]
-                    self.message("SCAN SEED", body, "B=CANCEL", lcd.WHITE)
+                    self.message("SCAN SEED", body, "B=BACK", lcd.WHITE)
                 if self.k.any_pressed():
                     if self.wait_key() in ("B", "LEFT"):
                         return None
                 if time.ticks_diff(time.ticks_ms(), t0) > 120000:
-                    self.message("TIMEOUT", ["NO SEEDQR", "READ"], "A=BACK", lcd.RED)
+                    self.message("TIMEOUT", ["NO SEEDQR", "READ"], "A=OK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
                     return None
                 time.sleep_ms(30)
@@ -1831,20 +1951,20 @@ class App:
         SC = scanner
         AV = addrverify
         if not self.root:
-            self.message("NO SEED", ["NO SEED LOADED"], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SEED", ["NO SEED LOADED"], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
         try:
             sc = SC.Scanner()
         except Exception as e:
-            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=BACK", lcd.RED)
-            self.wait_key(("A", "CTRL"))
+            self.message("NO SCANNER", ["UART FAILED", str(e)[:14]], "A=OK", lcd.RED)
+            self.wait_key(("A", "CTRL", "B"))
             return
 
         text = None
         t0 = time.ticks_ms()
         self.message("VERIFY", ["POINT AT", "ADDRESS QR", "", "ACCT %d" % self.account],
-                     "B=CANCEL")
+                     "B=BACK")
         try:
             while text is None:
                 for t in sc.poll():
@@ -1854,7 +1974,7 @@ class App:
                     if self.wait_key() in ("B", "LEFT"):
                         return
                 if time.ticks_diff(time.ticks_ms(), t0) > 120000:
-                    self.message("TIMEOUT", ["NOTHING READ"], "A=BACK", lcd.RED)
+                    self.message("TIMEOUT", ["NOTHING READ"], "A=OK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
                     return
                 time.sleep_ms(30)
@@ -1872,7 +1992,7 @@ class App:
                 AV.BAD_WRONG_NET: ["NOT MAINNET"],
                 AV.BAD_NOT_P2WPKH: ["NOT A BC1Q", "ADDRESS", "", "WALLET USES", "BC1Q ONLY"],
             }.get(e.reason, [str(e.reason)[:14]])
-            self.message("CANT CHECK", why, "A=BACK", lcd.RED)
+            self.message("CANT CHECK", why, "A=OK", lcd.RED)
             self.wait_key(("A", "CTRL", "B"))
             return
 
@@ -1886,7 +2006,7 @@ class App:
             for chain, i, cand in AV.candidates(chains, start, B):
                 self.message("CHECKING", ["ACCT %d" % self.account,
                                           "#%d-%d" % (start, start + B - 1),
-                                          "NOW #%d" % i], "B=CANCEL")
+                                          "NOW #%d" % i], "B=BACK")
                 if self.k.any_pressed():
                     if self.wait_key() in ("B", "LEFT"):
                         return
@@ -1899,7 +2019,7 @@ class App:
                                                   "SEARCH NEXT", "%d?" % B]):
                     self.message("UNVERIFIED", ["NOT FOUND IN", "ACCT %d #0-%d" % (self.account, start + B - 1),
                                                 "", "OTHER ACCT OR", "HIGHER INDEX?"],
-                                 "A=BACK", lcd.RED)
+                                 "A=OK", lcd.RED)
                     self.wait_key(("A", "CTRL", "B"))
                     return
                 start += B
@@ -1981,7 +2101,7 @@ class App:
     def run(self):
         """เมนู 2 ชั้นแบบ Jade (ผู้ใช้ ออกแบบ 14 ก.ย. 2026)
 
-        ยังไม่มี seed: New seed / Existing seed / Test seed / Status
+        ยังไม่มี seed: New seed / Load seed / Test seed / Status (25 ต.ค. 2026: Existing → Load ทุกจุด)
         มี seed แล้ว (Wallet): Account · Export xpub · Verify addr · Sign PSBT ·
                               Passphrase · SeedQR backup · Status · Unload seed
         ตัดออกแล้ว: Addresses (ใช้ Verify addr แทน — ให้ wallet สร้างที่อยู่ เครื่องแค่ยืนยัน)
@@ -1991,8 +2111,7 @@ class App:
         self.scanner_boot_check()
         while True:
             if self.root is None:
-                sel = self.menu("START", ["New seed", "Existing seed", "Test seed", "Status"],
-                                "A=SELECT")
+                sel = self.start_menu()
                 if sel in (0, 1):
                     # ปิด USB ก่อนเริ่มทอยเต๋า/พิมพ์คำ/สแกน — คำอยู่ใน RAM ตั้งแต่ตอนกรอก ไม่ใช่แค่ตอนโหลดเสร็จ
                     if not self.guard_usb():
@@ -2066,5 +2185,8 @@ APP = None      # main.py ใช้จอของแอปนี้วาดห
 def main():
     global APP
     APP = App()
+    # 🔴 25 ต.ค. 2026: โหลดรายการคำ BIP39 ตั้งแต่บูตตอนแรมยังไม่แตก (เหมือน import psbt ที่หัวไฟล์)
+    #    เดิมโหลดตอนกด NEW SEED / LOAD SEED → แรมว่าง 193 KB แต่ก้อนติดกันเหลือ 36 KB → CRASH 8192 ไบต์
+    bip39.wordlist(WL)
     splash(APP)
     APP.run()

@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "..", "src", "ui.py")
 
 TITLE_COLS = 10          # scale 2 ที่ x=4 · เหลือที่มุมขวาให้เปอร์เซ็นต์แบต
-HINT_COLS = 15
+HINT_WIDTH = 236         # แถบปุ่มตัวเล็กช่อง 12 (25 ต.ค. 2026) · ต้องลงใน 2 บรรทัด ไม่ตัดคู่ไหนทิ้ง
 WORST_D = "256"          # ตัวเลขมากสุดที่จอนี้เจอจริง (จำนวนทอย) — ใช้กับหัวเรื่อง/แถบปุ่ม
 # บรรทัดเนื้อความกับรายการเมนูไม่มีตัวนับทอย ตัวเลขมากสุดคือ account 99 / จำนวนคำ 24
 WORST_D_BODY = "99"
@@ -41,8 +41,14 @@ def worst_case(node, worst_d=None):
 
 
 def main():
+    global hint_layout
     with open(UI, encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename="ui.py")
+    # ใช้ _hint_layout ตัวจริงจาก ui.py (ไม่พึ่งอะไรนอกตัว) — ไม่ต้อง import ui ที่ต้องมีฮาร์ดแวร์
+    fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_hint_layout"][0]
+    ns = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "ui.py", "exec"), ns)
+    hint_layout = ns["_hint_layout"]
     bad = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -72,9 +78,9 @@ def main():
         if len(node.args) > hi:
             h = worst_case(node.args[hi])
             if h is not None:
-                for w in h.split():
-                    if len(w) > HINT_COLS:
-                        bad.append((node.lineno, "คำในแถบปุ่ม", w, HINT_COLS))
+                lines, dropped, widest = hint_layout(h)
+                if dropped or widest > HINT_WIDTH:
+                    bad.append((node.lineno, "แถบปุ่ม (พิกเซล)", h, HINT_WIDTH))
     # ตัวอักษรเล็ก (scale 1) ที่วาดตรง ๆ — ถ้ายาวเกิน 29 ตัวจะหลุดขอบจอเงียบ ๆ
     # (เจอจริง 11 ก.ย. 2026: แถบใต้ QR ยาว 32 ตัว "B=EXIT" เลยเหลือ "B=EX")
     for node in ast.walk(tree):
@@ -88,8 +94,27 @@ def main():
         t = worst_case(node.args[0])
         if t is not None and len(t) > SMALL_COLS:
             bad.append((node.lineno, "ตัวอักษรเล็ก", t, SMALL_COLS))
-    print("ตรวจข้อความบนจอใน ui.py (หัวเรื่อง %d ตัว · แถบปุ่ม %d ตัว/บรรทัด · ตัวเล็ก %d ตัว)"
-          % (TITLE_COLS, HINT_COLS, SMALL_COLS))
+    # 25 ต.ค. 2026 (ผู้ใช้): แถบ 2 แถว = ตาราง แถวบน A B · แถวล่าง X Y · คอลัมน์ 2 ตรงกัน · UD โชว์ UP DOWN
+    for h, want in (("A=135 B=246 X=DEL Y=BACK", [["A", "B"], ["X", "Y"]]),
+                    ("UD=LETTER A=OK X=DEL B=BACK", [["A", "B"], ["X", "UP DOWN"]]),
+                    ("A=TYPE X=DEL Y=DONE B=BACK", [["A", "B"], ["X", "Y"]])):
+        lines = hint_layout(h)[0]
+        keys = [[k for k, _v, _x in ln] for ln in lines]
+        cols = set(ln[1][2] for ln in lines if len(ln) > 1)
+        if keys != want or len(cols) != 1:
+            bad.append((0, "ตารางแถบปุ่ม", h, 0))
+    # 25 ต.ค. 2026 (ผู้ใช้): กฎปุ่มเดียวกันทุกหน้า — B ใช้คำว่า BACK · X = DEL · Y = DONE (หน้าทอยเต๋า Y = BACK)
+    #   ห้ามมี QUIT / CANCEL / EXIT / STOP และหน้าแจ้งเตือนห้ามเขียน A=BACK (A = ไปข้างหน้าเสมอ)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for w in node.value.split():
+                k, eq, v = w.partition("=")
+                if eq and k in ("A", "B", "X", "Y") and (
+                        (k == "B" and v not in ("BACK", "246")) or (k == "A" and v == "BACK")
+                        or (k == "X" and v != "DEL") or (k == "Y" and v not in ("DONE", "BACK"))):
+                    bad.append((getattr(node, "lineno", 0), "กฎปุ่ม", node.value, 0))
+    print("ตรวจข้อความบนจอใน ui.py (หัวเรื่อง %d ตัว · แถบปุ่ม %d พิกเซล 2 บรรทัด · ตัวเล็ก %d ตัว)"
+          % (TITLE_COLS, HINT_WIDTH, SMALL_COLS))
     for lineno, kind, text, lim in bad:
         print("  ui.py:%d  %s ยาว %d ตัว (เกิน %d) -> %r"
               % (lineno, kind, len(text), lim, text))

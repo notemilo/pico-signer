@@ -4,6 +4,25 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.22.5 — 2026-10-26
+Screens and buttons made easier for someone using the device for the first time. Tested on the device.
+
+- **Fixed a crash (`MemoryError`) when starting a new seed.** The 2,048-word list was loaded only when New seed or
+  Load seed was chosen; by then free RAM was split into small pieces (193 KB free, but the largest block was 36 KB)
+  and building the list needed an 8 KB block. The list is now loaded once at power-on (17 KB) and kept, and loading
+  it no longer makes temporary copies of the file.
+- **Start screen:** two large rounded tiles, **NEW SEED** and **LOAD SEED**, side by side; Test seed and Status are
+  smaller below. Left/right picks a tile; up/down still steps through all four in the old order. "Existing seed" is
+  now called **Load seed** everywhere.
+- **Button bar:** a grey bar at the bottom of every screen, each button name in a white rounded box followed by
+  what it does, in a smaller 12 px font so it does not compete with the screen content. When it needs two rows it is
+  a grid: A and B on top, X and Y below (the buttons are A, B, X, Y from top to bottom on the board).
+- **Same meaning for each button on every screen:** A goes forward (OK, select, type, next), **B is BACK** everywhere
+  (it was QUIT, CANCEL, EXIT, STOP or NO depending on the screen), X deletes, Y means done. Message screens that said
+  A=BACK now say A=OK, and B also closes them. The dice screen is the one exception: A and B enter 135/246, so Y goes
+  back there (with a confirmation).
+- `tests/test_ui_text_fits.py` now checks the button wording in every screen string, and the bar layout in pixels.
+
 ## 2.21.2 — 2026-10-25
 - **Fixed a crash (`MemoryError`) when typing seed words** under Existing Seed. On the first-letter screen the
   word-list lookup built a list of all 2,048 words (about 70 KB) every time, and when free RAM was fragmented the

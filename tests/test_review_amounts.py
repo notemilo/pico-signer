@@ -68,6 +68,11 @@ class FakeLCD:
         if x + len(str(s)) * 8 > 240:
             OFF.append((str(s), x, y))
 
+    def text_small(self, s, x, y, *a, **k):   # แถบปุ่มตัวเล็ก ช่อง 12 (25 ต.ค. 2026)
+        CUR.append((str(s), x, y, 1))
+        if x + len(str(s)) * 12 > 240:
+            OFF.append((str(s), x, y))
+
     def show(self):
         FRAMES.append(list(CUR))
 
