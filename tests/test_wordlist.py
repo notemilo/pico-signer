@@ -38,6 +38,12 @@ for x in ref:
     pre.add(x[:1]); pre.add(x[:2]); pre.add(x[:3])
 check("with_prefix ตรงกับการกรองทั้งรายการ (%d prefix)" % len(pre),
       all(w.with_prefix(p) == [x for x in ref if x.startswith(p)] for p in pre))
+pre |= {"", "zoo", "zz", "abandon", "car"}
+check("prefix_range ครอบคำที่ขึ้นต้นด้วย prefix พอดี (\"\" = ทั้ง 2,048 คำ · 25 ต.ค. 2026)",
+      all([ref[k] for k in range(*w.prefix_range(p))] == [x for x in ref if x.startswith(p)] for p in pre)
+      and w.prefix_range("") == (0, 2048))
+check("with_prefix(p, 4) = 4 คำแรกเท่านั้น",
+      all(w.with_prefix(p, 4) == [x for x in ref if x.startswith(p)][:4] for p in pre))
 check("ไฟล์แบบ CRLF อ่านได้ผลเดียวกัน", list(bip39.WordList(raw.replace(b"\n", b"\r\n"))) == ref)
 for name, data in (("2047 คำ", b"\n".join(raw.split(b"\n")[:2047])),
                    ("ไม่เรียงตัวอักษร", b"\n".join([ref[1].encode(), ref[0].encode()] + [x.encode() for x in ref[2:]])),

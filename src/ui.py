@@ -161,7 +161,13 @@ def next_letters(words, prefix):
     out = []
     exact = False
     # 15 ต.ค. 2026: รายการคำแบบก้อนเดียว (bip39.WordList) หาเฉพาะช่วงที่ขึ้นต้นด้วย prefix ได้เลย ไม่ต้องไล่ 2,048 คำทุกครั้งที่กดปุ่ม
-    pool = words.with_prefix(prefix) if hasattr(words, "with_prefix") else words
+    # 25 ต.ค. 2026: ห้ามใช้ with_prefix ตรงนี้ — prefix "" = list 2,048 คำ แรมหมด (CRASH ตอนเข้าหน้าพิมพ์คำ)
+    #   ไล่ทีละคำจากช่วงตำแหน่งแทน แต่ละคำทิ้งได้ทันที
+    if hasattr(words, "prefix_range"):
+        lo, hi = words.prefix_range(prefix)
+        pool = (words[k] for k in range(lo, hi))
+    else:
+        pool = words
     for w in pool:
         if not w.startswith(prefix):
             continue
@@ -679,10 +685,17 @@ class App:
                 ch = letters[li]
                 if ch == "":                       # เลือก "คำจบแค่ prefix นี้"
                     matches = [prefix]
+                    nmatch = 1
                     shown = prefix + "<"
                 else:
-                    matches = (words.with_prefix(prefix + ch) if hasattr(words, "with_prefix")
-                               else [w for w in words if w.startswith(prefix + ch)])
+                    if hasattr(words, "prefix_range"):
+                        # จอโชว์แค่ 4 คำ — เก็บแค่ 4 คำ (ตัวอักษรแรก 's' มี ~250 คำ)
+                        lo, hi = words.prefix_range(prefix + ch)
+                        nmatch = hi - lo
+                        matches = words.with_prefix(prefix + ch, 4)
+                    else:
+                        matches = [w for w in words if w.startswith(prefix + ch)]
+                        nmatch = len(matches)
                     shown = prefix + ch.upper()
                 self.d.clear(lcd.BLACK)
                 y = self._chrome("W %d/%d" % (len(got) + 1, count),
@@ -690,10 +703,10 @@ class App:
                 self.d.text_big(shown, 6, y, lcd.YELLOW, 3)
                 y += 32
                 self.d.text("%d of %d choices  %d words"
-                            % (li + 1, len(letters), len(matches)), 6, y, lcd.GREY)
+                            % (li + 1, len(letters), nmatch), 6, y, lcd.GREY)
                 y += 18
                 for w in matches[:4]:
-                    self.d.text_big(w, 10, y, lcd.WHITE if len(matches) > 1 else lcd.GREEN, 2)
+                    self.d.text_big(w, 10, y, lcd.WHITE if nmatch > 1 else lcd.GREEN, 2)
                     y += 22
                 self.d.show()
                 key = self.wait_key()
@@ -702,7 +715,7 @@ class App:
                 elif key == "DOWN":
                     li = (li + 1) % len(letters)
                 elif key in ("A", "CTRL", "RIGHT"):
-                    if len(matches) == 1:
+                    if nmatch == 1:
                         if self.confirm_word(len(got) + 1, count, matches[0]):
                             got.append(matches[0])
                             break

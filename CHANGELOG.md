@@ -4,6 +4,13 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.21.2 — 2026-10-25
+- **Fixed a crash (`MemoryError`) when typing seed words** under Existing Seed. On the first-letter screen the
+  word-list lookup built a list of all 2,048 words (about 70 KB) every time, and when free RAM was fragmented the
+  device crashed before any word was entered. The lookup now finds the range of matching words without copying them
+  (measured on the device: 70,240 bytes → 272 bytes). The letters offered are unchanged for every prefix
+  (`tests/test_wordlist.py`). Nothing was signed or stored when it crashed.
+
 ## 2.21.1 — 2026-10-21
 Found in a self-review of the code.
 

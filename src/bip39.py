@@ -86,18 +86,21 @@ class WordList:
         except ValueError:
             return False
 
-    def with_prefix(self, prefix):
-        """ทุกคำที่ขึ้นต้นด้วย prefix (เรียงตามตัวอักษร) — ไม่ต้องไล่ทั้ง 2,048 คำ"""
+    def prefix_range(self, prefix):
+        """(ลำดับแรก, ลำดับสุดท้าย+1) ของคำที่ขึ้นต้นด้วย prefix — ไม่จองแรมเป็นก้อน
+
+        🔴 25 ต.ค. 2026: CRASH MemoryError ตอนเข้า EXISTING SEED > พิมพ์คำ (crash.txt: with_prefix ← next_letters)
+           หน้าตัวอักษรแรก prefix = "" → with_prefix สร้าง list คำครบ 2,048 คำ (~68 KB) ทุกครั้ง
+           ผู้เรียกที่ต้องการแค่ "มีกี่คำ / ตัวอักษรถัดไป" ใช้ช่วงนี้แทน
+        """
         b = prefix.encode()
-        k = self._lower(b)
-        out = []
-        while k < 2048:
-            w = self._raw(k)
-            if not w.startswith(b):
-                break
-            out.append(w.decode())
-            k += 1
-        return out
+        # คำในรายการเป็นตัวพิมพ์เล็กล้วน → ทุกคำที่ขึ้นต้นด้วย b น้อยกว่า b + 0xFF
+        return self._lower(b), self._lower(b + b"\xff")
+
+    def with_prefix(self, prefix, limit=2048):
+        """คำที่ขึ้นต้นด้วย prefix (เรียงตามตัวอักษร) ไม่เกิน limit คำ — ไม่ต้องไล่ทั้ง 2,048 คำ"""
+        lo, hi = self.prefix_range(prefix)
+        return [self._raw(k).decode() for k in range(lo, min(hi, lo + limit))]
 
 
 def wordlist(path="english.txt"):
