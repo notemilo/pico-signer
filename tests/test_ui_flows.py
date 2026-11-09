@@ -199,7 +199,7 @@ keys += ["A",           # หน้า ROLLED (12 คำไม่มีหน้
          "A",           # show_words
          "DOWN", "A",   # SEED READY: USE SEED
          "A",           # USE SEED? ยืนยัน
-         "B",           # CHECK? (ทดสอบกระดาษ) — ข้าม · ทดสอบจริงอยู่หัวข้อ 16
+         "DOWN", "A",   # CHECK?: Skip check · ทดสอบกระดาษจริงอยู่หัวข้อ 16 และ 21
          "A"]           # READY (FP)
 left = drive(app.run, keys)
 ent = int("".join(map(str, bits)), 2).to_bytes(16, "big")
@@ -214,7 +214,7 @@ check("account เริ่มที่ 0 และไม่ถามหลั�
 print("── 1b. New seed 24 → ทอยคำสุดท้าย 111 = ลำดับที่ 8 ตามใบกระดาษ")
 bits24 = [rng.randint(0, 1) for _ in range(253)] + [1, 1, 1]
 app = new_app()
-keys = ["A", "A"] + ["A" if b else "B" for b in bits24] + ["A", "A", "A", "DOWN", "A", "A", "B", "A"]
+keys = ["A", "A"] + ["A" if b else "B" for b in bits24] + ["A", "A", "A", "DOWN", "A", "A", "DOWN", "A", "A"]
 left = drive(app.run, keys)
 first23w = app.mnemonic.split()[:23] if app.mnemonic else []
 c8 = bip39.last_word_candidates(" ".join(first23w)) if first23w else []
@@ -709,6 +709,55 @@ for test in (False, True):
     OUT_OF_SCREEN.clear()
     drive(app.start_menu, ["DOWN", "DOWN", "DOWN", "A"])
     check("is_test=%s: ไม่มีอะไรวาดเลยขอบจอ" % test, not OUT_OF_SCREEN)
+
+# ═══ 21. 31 ต.ค. 2026 (ตรวจ 2.22.5) — B = BACK ต้องถอยจริง: ไม่ข้ามการทดสอบกระดาษ · ไม่ทิ้งคำโดยไม่ถาม ═══
+print("── 21. CHECK? (New seed): B กลับไปดูคำ · ข้ามต้องเลือกเอง · CHECK n: B ถาม GO BACK? ก่อนทิ้งคำ")
+import dice
+_mn12 = dice.build_mnemonic([1 if b else 2 for b in bits], WL_PATH)[0]
+_to_check = ["A" if b else "B" for b in bits] + ["A",        # ROLLED
+                                                  "A",        # show_words
+                                                  "DOWN", "A",  # SEED READY: USE SEED
+                                                  "A"]        # USE SEED? ยืนยัน
+for k in ("B", "LEFT"):
+    app = new_app()
+    left = drive(lambda: app.screen_dice(12), _to_check + [k])
+    check("CHECK? กด %s = กลับไปหน้าดูคำ · ยังไม่โหลด seed" % k,
+          left == 0 and app.root is None and "CHECK?" in LOG and LOG[LOG.index("CHECK?"):].count("PG 1/2") == 1)
+_quiz = []
+for w in _mn12.split():
+    _quiz += _ans(w)
+app = new_app()
+left = drive(lambda: app.screen_dice(12), _to_check + ["B", "A", "DOWN", "A", "A", "A"] + _quiz + ["A", "A"])
+check("B แล้วกลับมา USE SEED อีกรอบ → Check paper → ตอบถูกครบ → โหลด seed",
+      left == 0 and app.mnemonic == _mn12 and seen("PAPER OK"))
+app = new_app()
+left = drive(lambda: app.screen_dice(12), _to_check + ["DOWN", "A", "A"])
+check("ข้ามการทดสอบได้ทางเดียว = เลือก Skip check เอง → โหลด seed ไม่มีหน้า WORD 1?",
+      left == 0 and app.mnemonic == _mn12 and seen("Skip check") and not seen("WORD 1?"))
+
+def _all12():
+    a = new_app()
+    a._type_words = lambda n, count: list(v12)
+    return a, lambda: a.screen_enter_words(12)
+
+
+def _find12():
+    a = new_app()
+    a._type_words = lambda n, count: list(first11)
+    a._pick_by_dice = lambda cands, count: cands[0]
+    return a, lambda: a.screen_find_last(12)
+
+
+for label, make, want in (("I have all 12", _all12, " ".join(v12)),
+                          ("Find word 12", _find12, " ".join(first11 + [c128[0]]))):
+    app, fn = make()
+    left = drive(fn, ["A", "B", "A"])                       # show_words · CHECK 12 B · GO BACK? A
+    check("%s: CHECK 12 กด B → ถาม GO BACK? ก่อน · ตอบ A = ทิ้งคำ ไม่โหลด" % label,
+          left == 0 and app.root is None and seen("GO BACK?") and seen("WORDS WILL BE"))
+    app, fn = make()
+    left = drive(fn, ["A", "B", "B", "A", "A", "A"])        # … GO BACK? B · show_words · CHECK 12 A · READY
+    check("%s: GO BACK? ตอบ B = กลับไปดูคำ → CHECK 12 อีกรอบ → โหลดได้" % label,
+          left == 0 and app.mnemonic == want and LOG.count("CHECK 12") == 2)
 
 print("\n(ใช้เวลา %.1f วิ)" % (time.time() - t0))
 if fails:

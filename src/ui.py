@@ -689,12 +689,13 @@ class App:
             if j == 1:
                 if self.confirm("USE SEED?", ["WROTE ALL %d" % count, "WORDS ON PAPER?", "",
                                               "LAST CHANCE"]):
-                    # 🔑 15 ต.ค. 2026 (SeedSigner SeedWordsBackupTestView): ทดสอบกระดาษก่อนใช้ — B ข้ามได้
+                    # 🔑 15 ต.ค. 2026 (SeedSigner SeedWordsBackupTestView): ทดสอบกระดาษก่อนใช้
                     #    ตอบผิด/กดหยุด = กลับไปดูคำใหม่ ยังไม่โหลด seed
-                    if self.confirm("CHECK?", ["QUIZ EACH WORD", "AGAINST YOUR", "PAPER", "",
-                                               "B = SKIP"]):
-                        if not self.quiz_words(parts):
-                            continue
+                    # 🔴 31 ต.ค. 2026 (ตรวจ 2.22.5): เดิมเป็น confirm "B = SKIP" — แถบเขียน B=BACK
+                    #    แต่กด B กลับโหลด seed ทันทีโดยไม่ทดสอบ → ข้ามต้องเลือกเองในเมนู · B = กลับไปดูคำ
+                    k = self.menu("CHECK?", ["Check paper", "Skip check"])
+                    if k is None or (k == 0 and not self.quiz_words(parts)):
+                        continue
                     self.load_mnemonic(mn, is_test=False)
                     return
                 continue
@@ -860,6 +861,19 @@ class App:
                         return None
         return got
 
+    def _review_words(self, parts, count):
+        """ตรวจทานคำครบชุดก่อนโหลด — คืน True = ถูกต้อง · False = ทิ้งคำทั้งหมด (ถาม GO BACK? ก่อนเสมอ)
+
+        🔴 31 ต.ค. 2026 (ตรวจ 2.22.5): เดิมกด B ที่หน้า CHECK n = ทิ้งคำที่พิมพ์มาทั้งชุดทันที
+           ไม่ถามก่อน (หน้าพิมพ์คำถาม GO BACK? ทุกครั้ง) → ถามแบบเดียวกัน · ตอบไม่ = กลับไปดูคำ
+        """
+        while True:
+            self.show_words(parts)
+            if self.confirm("CHECK %d" % count, ["ALL WORDS", "CORRECT?", "", "B = START OVER"]):
+                return True
+            if self.confirm("GO BACK?", ["WORDS WILL BE", "LOST"]):
+                return False
+
     def screen_enter_words(self, count=24):
         """มีครบทุกคำแล้ว — พิมพ์ทีละคำ ตรวจทาน แล้วตรวจ checksum"""
         got = self._type_words(count, count)
@@ -867,8 +881,7 @@ class App:
             return
         # 🔴 ให้ตรวจทานครบทุกคำก่อน — นี่คือด่านสุดท้ายก่อนเครื่องเอา seed ไปใช้
         #    ถ้าใส่ผิดสักคำแล้วปล่อยผ่าน เงินจะไปอยู่กระเป๋าที่ไม่มีใครถือกุญแจ
-        self.show_words(got)
-        if not self.confirm("CHECK %d" % count, ["ALL WORDS", "CORRECT?", "", "B = START OVER"]):
+        if not self._review_words(got, count):
             return
         mn = " ".join(got)
         if not bip39.is_valid(mn, WL):
@@ -893,8 +906,7 @@ class App:
         if last is None:
             return
         parts = got + [last]
-        self.show_words(parts)
-        if not self.confirm("CHECK %d" % count, ["ALL WORDS", "CORRECT?", "", "B = START OVER"]):
+        if not self._review_words(parts, count):
             return
         mn = " ".join(parts)
         if not bip39.is_valid(mn, WL):      # ไม่ควรเกิด — คำมาจาก last_word_candidates เอง

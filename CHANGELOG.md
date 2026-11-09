@@ -4,6 +4,22 @@ The version running on a device is shown on the boot screen and under **Status �
 file hashes). The current version is in [`VERSION`](VERSION). Versions: first number = menu or data format changes,
 second = new features, third = fixes.
 
+## 2.22.6 — 2026-11-09
+B now really goes back on the two screens where you check a seed's words, as the 2.22.5 button rule says. Tested on
+the device.
+
+- **CHECK? after a new seed** (New seed → USE SEED?): the screen said `B = SKIP` while the button bar said `B=BACK`,
+  and B loaded the seed at once without the paper quiz (once a seed is loaded its words are no longer listed). It is
+  now a menu, **Check paper** / **Skip check**. B goes back to the words without loading; the quiz is skipped only by
+  choosing Skip check.
+- **CHECK 12 / CHECK 24 after typing all the words** (I have all / Find word): B threw away every typed word without
+  asking. It now asks **GO BACK?** first (WORDS WILL BE LOST), as the word-typing screens already do; answering B
+  returns to the words and asks CHECK again.
+- `tests/test_ui_flows.py` section 21 covers both screens: B at CHECK? does not load the seed, Check paper with every
+  answer right loads it, Skip check loads it without the quiz, and B at CHECK 12 asks GO BACK? from both I have all
+  and Find word.
+- [DICE.md](DICE.md) and [DICE.th.md](DICE.th.md) step 6 describe the new menu (they said B skips the quiz).
+
 ## 2.22.5 — 2026-10-26
 Screens and buttons made easier for someone using the device for the first time. Tested on the device.
 

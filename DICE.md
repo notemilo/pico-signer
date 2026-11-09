@@ -42,12 +42,14 @@ your last rolls pick one of them. For 24 words there are 8 valid last words and 
 4. After the last rolls the device shows the last word and which choice your rolls picked
    (for 24 words it also lists all 8 choices). Check it against the roll sheet.
 5. Write all the words on your backup in order. **Show again** lets you read them again before you continue.
-6. Choose **USE SEED**. You can then take a short quiz that asks each word against your paper (B skips it).
+6. Choose **USE SEED**, then **Check paper** for a short quiz that asks each word against your paper, or
+   **Skip check** to use the seed without it. B goes back to the words.
 
 ## Keep it safe
 
 - **The roll sheet is your seed.** Anyone who sees it can rebuild your wallet. Fill it in privately, never take a
   photo of it, and destroy it once the words are on your backup.
-- After you choose USE SEED the device no longer lists the words (there is no PIN, so this keeps someone who picks
-  up a running device from reading them; only the SeedQR backup screen remains). Write them down before that step.
+- Once the seed is in use (after Check paper or Skip check) the device no longer lists the words (there is no PIN,
+  so this keeps someone who picks up a running device from reading them; only the SeedQR backup screen remains).
+  Write them down before that step.
 - The device does not judge your rolls. Real dice, entered as rolled, are random.
